@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Obsidian Agent Pilot</title>
+  <style>
+    :root {
+      --bg: #1a1a2e;
+      --bg-secondary: #16213e;
+      --bg-tertiary: #0f3460;
+      --accent: #e94560;
+      --accent-dim: #a63446;
+      --text: #eee;
+      --text-dim: #888;
+      --border: #333;
+      --success: #4ade80;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background: var(--bg-secondary);
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    header h1 {
+      font-size: 1.2rem;
+      font-weight: 500;
+    }
+
+    header h1 span { color: var(--accent); }
+
+    .vault-info {
+      margin-left: auto;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    main {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Sidebar */
+    .sidebar {
+      width: 280px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .sidebar-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .sidebar-header h2 {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .doc-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 0.5rem;
+    }
+
+    .doc-item {
+      padding: 0.75rem;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 0.25rem;
+      transition: background 0.15s;
+    }
+
+    .doc-item:hover { background: var(--bg-tertiary); }
+    .doc-item.selected { background: var(--bg-tertiary); border-left: 3px solid var(--accent); }
+
+    .doc-title {
+      font-size: 0.9rem;
+      margin-bottom: 0.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .doc-title .agent-badge {
+      font-size: 0.65rem;
+      background: var(--accent-dim);
+      padding: 0.15rem 0.4rem;
+      border-radius: 3px;
+    }
+
+    .doc-path {
+      font-size: 0.7rem;
+      color: var(--text-dim);
+    }
+
+    /* Chat Area */
+    .chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .chat-header {
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+
+    .chat-header h2 {
+      font-size: 1rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .chat-header .context {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    .chat-header .context.with-agent { color: var(--success); }
+
+    .messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .message {
+      max-width: 85%;
+      padding: 1rem;
+      border-radius: 8px;
+      line-height: 1.5;
+    }
+
+    .message.user {
+      background: var(--bg-tertiary);
+      align-self: flex-end;
+    }
+
+    .message.assistant {
+      background: var(--bg-secondary);
+      align-self: flex-start;
+      border: 1px solid var(--border);
+    }
+
+    .message pre {
+      background: var(--bg);
+      padding: 0.75rem;
+      border-radius: 4px;
+      overflow-x: auto;
+      margin: 0.5rem 0;
+      font-size: 0.85rem;
+    }
+
+    .message code {
+      background: var(--bg);
+      padding: 0.15rem 0.3rem;
+      border-radius: 3px;
+      font-size: 0.85rem;
+    }
+
+    .thinking {
+      color: var(--text-dim);
+      font-style: italic;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .thinking::before {
+      content: '';
+      width: 8px;
+      height: 8px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 1s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.3; }
+      50% { opacity: 1; }
+    }
+
+    .chat-input-area {
+      padding: 1rem 1.5rem;
+      border-top: 1px solid var(--border);
+      background: var(--bg-secondary);
+    }
+
+    .input-wrapper {
+      display: flex;
+      gap: 0.75rem;
+    }
+
+    .chat-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      color: var(--text);
+      font-family: inherit;
+      font-size: 0.9rem;
+      resize: none;
+    }
+
+    .chat-input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .send-btn {
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      padding: 0.75rem 1.5rem;
+      color: white;
+      font-family: inherit;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .send-btn:hover { background: var(--accent-dim); }
+    .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Document Panel */
+    .doc-panel {
+      width: 400px;
+      background: var(--bg-secondary);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .doc-panel.hidden { display: none; }
+
+    .doc-panel-header {
+      padding: 1rem;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .doc-panel-header h3 {
+      font-size: 0.9rem;
+      font-weight: 500;
+    }
+
+    .close-btn {
+      background: none;
+      border: none;
+      color: var(--text-dim);
+      cursor: pointer;
+      font-size: 1.2rem;
+    }
+
+    .doc-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      font-size: 0.85rem;
+      line-height: 1.6;
+    }
+
+    .doc-content h1, .doc-content h2, .doc-content h3 {
+      margin: 1rem 0 0.5rem;
+      color: var(--accent);
+    }
+
+    .doc-content ul, .doc-content ol {
+      margin-left: 1.5rem;
+    }
+
+    .doc-frontmatter {
+      background: var(--bg);
+      padding: 0.75rem;
+      border-radius: 4px;
+      margin-bottom: 1rem;
+      font-size: 0.75rem;
+    }
+
+    .doc-frontmatter pre {
+      margin: 0;
+      white-space: pre-wrap;
+    }
+
+    /* Empty state */
+    .empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-dim);
+      text-align: center;
+      padding: 2rem;
+    }
+
+    .empty-state h2 {
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+      color: var(--text);
+    }
+
+    .empty-state p {
+      max-width: 400px;
+      line-height: 1.6;
+    }
+
+    .quick-actions {
+      margin-top: 1.5rem;
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .quick-action {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.5rem 1rem;
+      color: var(--text);
+      font-family: inherit;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .quick-action:hover {
+      border-color: var(--accent);
+      background: var(--bg-secondary);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1><span>◆</span> Obsidian Agent Pilot</h1>
+    <div class="vault-info" id="vaultInfo">Loading vault...</div>
+  </header>
+
+  <main>
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h2>Documents</h2>
+        <span id="docCount">0</span>
+      </div>
+      <div class="doc-list" id="docList"></div>
+    </aside>
+
+    <section class="chat-area">
+      <div class="chat-header">
+        <h2 id="chatTitle">Vault Agent</h2>
+        <div class="context" id="chatContext">Chat with your entire vault</div>
+      </div>
+
+      <div class="messages" id="messages">
+        <div class="empty-state">
+          <h2>Welcome to your Living Vault</h2>
+          <p>
+            Each document can have its own agent personality defined in frontmatter.
+            Select a document to chat with its agent, or chat with the vault as a whole.
+          </p>
+          <div class="quick-actions">
+            <button class="quick-action" data-prompt="What documents are in my vault?">List documents</button>
+            <button class="quick-action" data-prompt="Give me an overview of my vault's structure and content">Vault overview</button>
+            <button class="quick-action" data-prompt="Which documents have agents configured?">Find agents</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-input-area">
+        <div class="input-wrapper">
+          <textarea
+            class="chat-input"
+            id="chatInput"
+            placeholder="Ask anything about your vault..."
+            rows="1"
+          ></textarea>
+          <button class="send-btn" id="sendBtn">Send</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="doc-panel hidden" id="docPanel">
+      <div class="doc-panel-header">
+        <h3 id="docPanelTitle">Document</h3>
+        <button class="close-btn" id="closeDocPanel">&times;</button>
+      </div>
+      <div class="doc-content" id="docContent"></div>
+    </aside>
+  </main>
+
+  <script>
+    // State
+    let documents = [];
+    let selectedDoc = null;
+    let isLoading = false;
+
+    // DOM elements
+    const docList = document.getElementById('docList');
+    const docCount = document.getElementById('docCount');
+    const vaultInfo = document.getElementById('vaultInfo');
+    const messages = document.getElementById('messages');
+    const chatInput = document.getElementById('chatInput');
+    const sendBtn = document.getElementById('sendBtn');
+    const chatTitle = document.getElementById('chatTitle');
+    const chatContext = document.getElementById('chatContext');
+    const docPanel = document.getElementById('docPanel');
+    const docPanelTitle = document.getElementById('docPanelTitle');
+    const docContent = document.getElementById('docContent');
+    const closeDocPanel = document.getElementById('closeDocPanel');
+
+    // Initialize
+    async function init() {
+      await loadVaultInfo();
+      await loadDocuments();
+      setupEventListeners();
+    }
+
+    async function loadVaultInfo() {
+      try {
+        const res = await fetch('/api/vault');
+        const data = await res.json();
+        vaultInfo.textContent = `${data.totalDocuments} documents`;
+      } catch (e) {
+        vaultInfo.textContent = 'Error loading vault';
+      }
+    }
+
+    async function loadDocuments() {
+      try {
+        const res = await fetch('/api/documents');
+        documents = await res.json();
+        renderDocList();
+      } catch (e) {
+        console.error('Failed to load documents:', e);
+      }
+    }
+
+    function renderDocList() {
+      docCount.textContent = documents.length;
+      docList.innerHTML = documents.map(doc => `
+        <div class="doc-item" data-path="${doc.path}">
+          <div class="doc-title">
+            ${doc.title}
+            ${doc.agent ? `<span class="agent-badge">${doc.agent.role || 'agent'}</span>` : ''}
+          </div>
+          <div class="doc-path">${doc.path}</div>
+        </div>
+      `).join('');
+    }
+
+    function selectDocument(path) {
+      const doc = documents.find(d => d.path === path);
+      if (!doc) return;
+
+      selectedDoc = doc;
+
+      // Update UI
+      document.querySelectorAll('.doc-item').forEach(el => {
+        el.classList.toggle('selected', el.dataset.path === path);
+      });
+
+      if (doc.agent) {
+        chatTitle.textContent = `${doc.title} Agent`;
+        chatContext.textContent = `Role: ${doc.agent.role || 'custom agent'}`;
+        chatContext.classList.add('with-agent');
+      } else {
+        chatTitle.textContent = doc.title;
+        chatContext.textContent = 'This document has no agent (using vault agent)';
+        chatContext.classList.remove('with-agent');
+      }
+
+      // Show document panel
+      showDocPanel(path);
+    }
+
+    function deselectDocument() {
+      selectedDoc = null;
+      document.querySelectorAll('.doc-item').forEach(el => el.classList.remove('selected'));
+      chatTitle.textContent = 'Vault Agent';
+      chatContext.textContent = 'Chat with your entire vault';
+      chatContext.classList.remove('with-agent');
+      docPanel.classList.add('hidden');
+    }
+
+    async function showDocPanel(path) {
+      try {
+        const res = await fetch(`/api/documents/${path}`);
+        const doc = await res.json();
+
+        docPanelTitle.textContent = doc.frontmatter.title || path;
+        docContent.innerHTML = `
+          <div class="doc-frontmatter">
+            <strong>Frontmatter:</strong>
+            <pre>${JSON.stringify(doc.frontmatter, null, 2)}</pre>
+          </div>
+          ${doc.html}
+        `;
+        docPanel.classList.remove('hidden');
+      } catch (e) {
+        console.error('Failed to load document:', e);
+      }
+    }
+
+    async function sendMessage(text) {
+      if (!text.trim() || isLoading) return;
+
+      // Clear empty state
+      const emptyState = messages.querySelector('.empty-state');
+      if (emptyState) emptyState.remove();
+
+      // Add user message
+      addMessage(text, 'user');
+
+      // Show thinking indicator
+      const thinkingEl = document.createElement('div');
+      thinkingEl.className = 'thinking';
+      thinkingEl.textContent = 'Agent is thinking...';
+      messages.appendChild(thinkingEl);
+      messages.scrollTop = messages.scrollHeight;
+
+      isLoading = true;
+      sendBtn.disabled = true;
+      chatInput.value = '';
+
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            documentPath: selectedDoc?.path
+          })
+        });
+
+        const data = await res.json();
+        thinkingEl.remove();
+
+        if (data.error) {
+          addMessage(`Error: ${data.error}`, 'assistant');
+        } else {
+          addMessage(data.response, 'assistant');
+        }
+
+        // Refresh documents in case any were created/modified
+        await loadDocuments();
+      } catch (e) {
+        thinkingEl.remove();
+        addMessage(`Error: ${e.message}`, 'assistant');
+      }
+
+      isLoading = false;
+      sendBtn.disabled = false;
+    }
+
+    function addMessage(text, role) {
+      const el = document.createElement('div');
+      el.className = `message ${role}`;
+      el.innerHTML = formatMessage(text);
+      messages.appendChild(el);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    function formatMessage(text) {
+      // Basic markdown-like formatting
+      return text
+        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\n/g, '<br>');
+    }
+
+    function setupEventListeners() {
+      // Document selection
+      docList.addEventListener('click', (e) => {
+        const docItem = e.target.closest('.doc-item');
+        if (docItem) {
+          if (selectedDoc?.path === docItem.dataset.path) {
+            deselectDocument();
+          } else {
+            selectDocument(docItem.dataset.path);
+          }
+        }
+      });
+
+      // Close doc panel
+      closeDocPanel.addEventListener('click', () => {
+        docPanel.classList.add('hidden');
+      });
+
+      // Send message
+      sendBtn.addEventListener('click', () => sendMessage(chatInput.value));
+
+      chatInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendMessage(chatInput.value);
+        }
+      });
+
+      // Quick actions
+      document.addEventListener('click', (e) => {
+        if (e.target.classList.contains('quick-action')) {
+          sendMessage(e.target.dataset.prompt);
+        }
+      });
+
+      // Auto-resize textarea
+      chatInput.addEventListener('input', () => {
+        chatInput.style.height = 'auto';
+        chatInput.style.height = Math.min(chatInput.scrollHeight, 150) + 'px';
+      });
+    }
+
+    init();
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "obsidian-agent-pilot",
+  "version": "0.1.0",
+  "description": "Prototype: Obsidian vault as agentic backend using Claude Agent SDK",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test lib/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "express": "^4.21.0",
+    "glob": "^13.0.0",
+    "gray-matter": "^4.0.3",
+    "marked": "^15.0.0",
+    "zod": "^4.1.13"
+  }
+}
