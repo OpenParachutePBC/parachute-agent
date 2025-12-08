@@ -1,7 +1,7 @@
 {
-  "name": "obsidian-agent-pilot",
+  "name": "parachute-agent",
   "version": "0.1.0",
-  "description": "Prototype: Obsidian vault as agentic backend using Claude Agent SDK",
+  "description": "AI agent backend for Parachute - markdown-defined agents powered by Claude",
   "type": "module",
   "scripts": {
     "start": "node server.js",
