@@ -51,9 +51,16 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/agents` | GET | List agents |
-| `/api/chat` | POST | Send message |
-| `/api/chat/sessions` | GET | List sessions |
-| `/api/chat/session` | DELETE | Clear session |
+| `/api/chat` | POST | Send message (body: `{message, agentPath?, sessionId?}`) |
+| `/api/chat/sessions` | GET | List all sessions |
+| `/api/chat/session/:id` | GET | Get session by ID with messages |
+| `/api/chat/session/:id/archive` | POST | Archive a session |
+| `/api/chat/session/:id/unarchive` | POST | Unarchive a session |
+| `/api/chat/session/:id` | DELETE | Delete session permanently |
+| `/api/chat/session` | DELETE | Clear session (legacy) |
+| `/api/permissions/stream` | GET | SSE stream for permission requests |
+| `/api/permissions/:id/grant` | POST | Grant a pending permission |
+| `/api/permissions/:id/deny` | POST | Deny a pending permission |
 
 ## Agent Definition Format
 
@@ -82,6 +89,16 @@ Sessions stored as markdown in `agent-chats/`:
 
 ### SDK Session Resumption
 The `sdk_session_id` in frontmatter enables conversation resumption. Always validate this value - must be a valid string, not `[object Object]`.
+
+### Session Management
+- Each chat gets a unique `sessionId` for isolation
+- Sessions track `archived` status (persisted in YAML)
+- Plugin uses `serverId` for history fetch vs `id` for API routing
+
+### Permission System
+- Agents define `write_permissions` as glob patterns in frontmatter
+- Writes outside allowed paths trigger permission requests via SSE
+- Plugin shows inline permission dialogs for user approval
 
 ### Error Handling
 - Agent execution errors returned in response

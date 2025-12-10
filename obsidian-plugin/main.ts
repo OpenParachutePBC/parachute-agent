@@ -18,6 +18,82 @@ const DEFAULT_SETTINGS: AgentPilotSettings = {
   refreshInterval: 3000,
 };
 
+// Forward declaration of PermissionRequest interface (full definition below)
+interface PermissionRequest {
+  id: string;
+  toolName: string;
+  filePath: string;
+  agentName: string;
+  allowedPatterns: string[];
+  status: 'pending' | 'granted' | 'denied';
+}
+
+// ============================================================================
+// PERMISSION REQUEST MODAL
+// ============================================================================
+
+class PermissionRequestModal extends Modal {
+  private request: PermissionRequest;
+  private plugin: AgentPilotPlugin;
+  private onDecision: (granted: boolean) => void;
+
+  constructor(app: App, plugin: AgentPilotPlugin, request: PermissionRequest, onDecision: (granted: boolean) => void) {
+    super(app);
+    this.plugin = plugin;
+    this.request = request;
+    this.onDecision = onDecision;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass('permission-request-modal');
+
+    contentEl.createEl('h2', { text: 'Permission Request' });
+
+    const infoEl = contentEl.createDiv({ cls: 'permission-info' });
+    infoEl.createEl('p', {
+      text: `Agent "${this.request.agentName}" wants to write to a file outside its allowed paths.`
+    });
+
+    const detailsEl = contentEl.createDiv({ cls: 'permission-details' });
+    detailsEl.createEl('div', { cls: 'permission-label', text: 'Tool:' });
+    detailsEl.createEl('div', { cls: 'permission-value', text: this.request.toolName });
+
+    detailsEl.createEl('div', { cls: 'permission-label', text: 'File:' });
+    detailsEl.createEl('div', { cls: 'permission-value permission-path', text: this.request.filePath });
+
+    detailsEl.createEl('div', { cls: 'permission-label', text: 'Allowed paths:' });
+    detailsEl.createEl('div', {
+      cls: 'permission-value',
+      text: this.request.allowedPatterns.join(', ')
+    });
+
+    const warningEl = contentEl.createDiv({ cls: 'permission-warning' });
+    warningEl.createEl('p', {
+      text: 'Do you want to allow this write operation?'
+    });
+
+    const buttonsEl = contentEl.createDiv({ cls: 'permission-buttons' });
+
+    const denyBtn = buttonsEl.createEl('button', { text: 'Deny', cls: 'mod-warning' });
+    denyBtn.addEventListener('click', () => {
+      this.onDecision(false);
+      this.close();
+    });
+
+    const allowBtn = buttonsEl.createEl('button', { text: 'Allow', cls: 'mod-cta' });
+    allowBtn.addEventListener('click', () => {
+      this.onDecision(true);
+      this.close();
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
+  }
+}
+
 // ============================================================================
 // MAIN VIEW (Tabbed: Chat | Agents | Activity)
 // ============================================================================
@@ -32,20 +108,37 @@ interface ToolCall {
   result?: string;
 }
 
+// PermissionRequest interface is defined above (near the Modal class)
+
+interface DebugInfo {
+  systemPromptLength: number;
+  messageLength: number;
+  agentPath: string;
+  model: string;
+  toolsAvailable: string[];
+  writePermissions?: string[];
+  resumedSession: boolean;
+  durationMs?: number;
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
   agentPath?: string;
   toolCalls?: ToolCall[];
+  permissionDenials?: { toolName: string; filePath: string; reason: string }[];
+  debug?: DebugInfo;
 }
 
 interface ChatSession {
-  id: string;
+  id: string;           // Session ID used in API calls (sessionId for routing)
+  serverId?: string;    // Server's internal session ID (for fetching history)
   name: string;
   agentPath: string | null;
   messages: ChatMessage[];
   createdAt: Date;
+  archived?: boolean;
 }
 
 interface QueueItem {
@@ -98,6 +191,10 @@ class AgentPilotView extends ItemView {
   // Refresh interval
   private refreshTimer: number | null = null;
 
+  // Permission request SSE connection
+  private permissionEventSource: EventSource | null = null;
+  private pendingPermissionRequests: Map<string, PermissionRequest> = new Map();
+
   constructor(leaf: WorkspaceLeaf, plugin: AgentPilotPlugin) {
     super(leaf);
     this.plugin = plugin;
@@ -116,6 +213,7 @@ class AgentPilotView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    console.log('[Agent Pilot] View onOpen called');
     this.containerEl = this.contentEl;
     this.containerEl.empty();
     this.containerEl.addClass('agent-pilot-view');
@@ -128,14 +226,82 @@ class AgentPilotView extends ItemView {
       this.startAutoRefresh();
     }
 
+    // Connect to permission request stream
+    console.log('[Agent Pilot] About to connect permission stream');
+    this.connectPermissionStream();
+
     // Initial data load
     await this.loadAgents();
     await this.loadSessions();
     await this.refreshQueue();
+    console.log('[Agent Pilot] View onOpen complete');
   }
 
   async onClose(): Promise<void> {
     this.stopAutoRefresh();
+    this.disconnectPermissionStream();
+  }
+
+  private connectPermissionStream(): void {
+    const url = `${this.plugin.settings.orchestratorUrl}/api/permissions/stream`;
+    console.log('[Agent Pilot] Connecting to permission stream:', url);
+    this.permissionEventSource = new EventSource(url);
+
+    this.permissionEventSource.onopen = () => {
+      console.log('[Agent Pilot] Permission stream connected');
+    };
+
+    this.permissionEventSource.onmessage = (event) => {
+      console.log('[Agent Pilot] SSE message received:', event.data);
+      try {
+        const data = JSON.parse(event.data);
+
+        if (data.type === 'permissionRequest') {
+          console.log('[Agent Pilot] Permission request received:', data.request);
+          this.handlePermissionRequest(data.request);
+        } else if (data.type === 'permissionGranted' || data.type === 'permissionDenied') {
+          this.pendingPermissionRequests.delete(data.request.id);
+        }
+      } catch (e) {
+        console.error('[Agent Pilot] Error parsing SSE message:', e);
+      }
+    };
+
+    this.permissionEventSource.onerror = (e) => {
+      console.error('[Agent Pilot] Permission stream error:', e);
+      // Reconnect after a delay
+      setTimeout(() => {
+        if (this.permissionEventSource) {
+          this.connectPermissionStream();
+        }
+      }, 5000);
+    };
+  }
+
+  private disconnectPermissionStream(): void {
+    if (this.permissionEventSource) {
+      this.permissionEventSource.close();
+      this.permissionEventSource = null;
+    }
+  }
+
+  private handlePermissionRequest(request: PermissionRequest): void {
+    this.pendingPermissionRequests.set(request.id, request);
+    // Re-render to show inline permission request
+    this.render();
+  }
+
+  private async respondToPermission(requestId: string, granted: boolean): Promise<void> {
+    try {
+      const endpoint = granted ? 'grant' : 'deny';
+      await fetch(`${this.plugin.settings.orchestratorUrl}/api/permissions/${requestId}/${endpoint}`, {
+        method: 'POST'
+      });
+      this.pendingPermissionRequests.delete(requestId);
+      this.render();
+    } catch (e) {
+      new Notice(`Failed to ${granted ? 'grant' : 'deny'} permission: ${(e as Error).message}`);
+    }
   }
 
   private startAutoRefresh(): void {
@@ -234,6 +400,50 @@ class AgentPilotView extends ItemView {
     }
   }
 
+  private async archiveSession(session: ChatSession): Promise<void> {
+    const sessionIdToArchive = session.serverId || session.id;
+    try {
+      await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat/session/${encodeURIComponent(sessionIdToArchive)}/archive`, {
+        method: 'POST'
+      });
+      session.archived = true;
+      if (this.currentSessionId === session.id) {
+        // Select the next active session
+        const activeSessions = this.sessions.filter(s => !s.archived && s.id !== session.id);
+        this.currentSessionId = activeSessions.length > 0 ? activeSessions[0].id : null;
+      }
+      this.render();
+    } catch (e) {
+      new Notice(`Failed to archive session: ${(e as Error).message}`);
+    }
+  }
+
+  private async unarchiveSession(session: ChatSession): Promise<void> {
+    const sessionIdToUnarchive = session.serverId || session.id;
+    try {
+      await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat/session/${encodeURIComponent(sessionIdToUnarchive)}/unarchive`, {
+        method: 'POST'
+      });
+      session.archived = false;
+      this.render();
+    } catch (e) {
+      new Notice(`Failed to unarchive session: ${(e as Error).message}`);
+    }
+  }
+
+  private async deleteSessionPermanently(session: ChatSession): Promise<void> {
+    const sessionIdToDelete = session.serverId || session.id;
+    try {
+      await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat/session/${encodeURIComponent(sessionIdToDelete)}`, {
+        method: 'DELETE'
+      });
+      this.deleteSession(session.id);
+      this.render();
+    } catch (e) {
+      new Notice(`Failed to delete session: ${(e as Error).message}`);
+    }
+  }
+
   /**
    * Load existing sessions from the server
    */
@@ -243,12 +453,15 @@ class AgentPilotView extends ItemView {
       const serverSessions = await response.json();
 
       // Convert server sessions to plugin format
+      // Use context.sessionId for API routing, and s.id for fetching history
       this.sessions = serverSessions.map((s: any) => ({
-        id: s.id,
+        id: s.context?.sessionId || s.id,  // For API calls (sendMessage)
+        serverId: s.id,                     // For fetching history
         name: s.agentName || 'Chat',
         agentPath: s.agentPath === 'vault-agent' ? null : s.agentPath,
         messages: [], // Messages are loaded on-demand when switching to the session
-        createdAt: new Date(s.createdAt)
+        createdAt: new Date(s.createdAt),
+        archived: s.archived || false
       }));
 
       // Sort by most recent first
@@ -266,8 +479,10 @@ class AgentPilotView extends ItemView {
    */
   private async loadSessionHistory(session: ChatSession): Promise<void> {
     try {
+      // Use serverId if available (for server-loaded sessions), otherwise id (for newly created)
+      const sessionIdForHistory = session.serverId || session.id;
       const response = await fetch(
-        `${this.plugin.settings.orchestratorUrl}/api/chat/session/${encodeURIComponent(session.id)}`
+        `${this.plugin.settings.orchestratorUrl}/api/chat/session/${encodeURIComponent(sessionIdForHistory)}`
       );
 
       if (!response.ok) {
@@ -292,6 +507,71 @@ class AgentPilotView extends ItemView {
     }
   }
 
+  private renderSessionItem(container: HTMLElement, s: ChatSession, isArchived: boolean): void {
+    const sessionItem = container.createDiv({
+      cls: `pilot-session-item ${s.id === this.currentSessionId ? 'active' : ''} ${isArchived ? 'pilot-session-archived' : ''}`
+    });
+
+    const sessionInfo = sessionItem.createDiv({ cls: 'pilot-session-info' });
+    sessionInfo.createEl('span', { text: s.name, cls: 'pilot-session-name' });
+
+    const msgCount = s.messages.filter(m => m.role !== 'system').length;
+    if (msgCount > 0) {
+      sessionInfo.createEl('span', {
+        text: `${msgCount} msg${msgCount > 1 ? 's' : ''}`,
+        cls: 'pilot-session-count'
+      });
+    }
+
+    sessionItem.addEventListener('click', async () => {
+      this.currentSessionId = s.id;
+      // Load history if not already loaded
+      if (s.messages.length === 0) {
+        await this.loadSessionHistory(s);
+      } else {
+        this.render();
+      }
+    });
+
+    // Action buttons container
+    const actionsEl = sessionItem.createDiv({ cls: 'pilot-session-actions' });
+
+    if (isArchived) {
+      // Unarchive button for archived sessions
+      const unarchiveBtn = actionsEl.createEl('button', {
+        cls: 'pilot-session-action',
+        attr: { 'aria-label': 'Restore', title: 'Restore from archive' }
+      });
+      unarchiveBtn.textContent = '↩';
+      unarchiveBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.unarchiveSession(s);
+      });
+
+      // Delete button for archived sessions
+      const deleteBtn = actionsEl.createEl('button', {
+        cls: 'pilot-session-action pilot-session-action-delete',
+        attr: { 'aria-label': 'Delete permanently', title: 'Delete permanently' }
+      });
+      deleteBtn.textContent = '🗑';
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.deleteSessionPermanently(s);
+      });
+    } else {
+      // Archive button for active sessions
+      const archiveBtn = actionsEl.createEl('button', {
+        cls: 'pilot-session-action',
+        attr: { 'aria-label': 'Archive', title: 'Archive chat' }
+      });
+      archiveBtn.textContent = '📦';
+      archiveBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await this.archiveSession(s);
+      });
+    }
+  }
+
   private renderChatTab(container: HTMLElement): void {
     const chatbotAgents = this.agents.filter(a => a.type === 'chatbot' || !a.type);
     const session = this.getCurrentSession();
@@ -312,51 +592,39 @@ class AgentPilotView extends ItemView {
       this.render();
     });
 
-    // List of sessions
+    // Separate active and archived sessions
+    const activeSessions = this.sessions.filter(s => !s.archived);
+    const archivedSessions = this.sessions.filter(s => s.archived);
+
+    // Active sessions section
     const sessionsContainer = sessionList.createDiv({ cls: 'pilot-sessions' });
 
-    if (this.sessions.length === 0) {
-      sessionsContainer.createDiv({ cls: 'pilot-sessions-empty', text: 'No chats yet' });
+    if (activeSessions.length === 0) {
+      sessionsContainer.createDiv({ cls: 'pilot-sessions-empty', text: 'No active chats' });
     } else {
-      for (const s of this.sessions) {
-        const sessionItem = sessionsContainer.createDiv({
-          cls: `pilot-session-item ${s.id === this.currentSessionId ? 'active' : ''}`
-        });
+      for (const s of activeSessions) {
+        this.renderSessionItem(sessionsContainer, s, false);
+      }
+    }
 
-        const sessionInfo = sessionItem.createDiv({ cls: 'pilot-session-info' });
-        sessionInfo.createEl('span', { text: s.name, cls: 'pilot-session-name' });
+    // Archived sessions section (collapsible)
+    if (archivedSessions.length > 0) {
+      const archivedSection = sessionList.createDiv({ cls: 'pilot-archived-section' });
+      const archivedHeader = archivedSection.createDiv({ cls: 'pilot-archived-header' });
+      archivedHeader.createEl('span', { text: `Archived (${archivedSessions.length})`, cls: 'pilot-archived-label' });
 
-        const msgCount = s.messages.filter(m => m.role !== 'system').length;
-        if (msgCount > 0) {
-          sessionInfo.createEl('span', {
-            text: `${msgCount} msg${msgCount > 1 ? 's' : ''}`,
-            cls: 'pilot-session-count'
-          });
-        }
+      const archivedToggle = archivedHeader.createEl('span', { cls: 'pilot-archived-toggle', text: '▼' });
+      const archivedList = archivedSection.createDiv({ cls: 'pilot-archived-list' });
+      archivedList.style.display = 'none';  // Start collapsed
 
-        sessionItem.addEventListener('click', async () => {
-          this.currentSessionId = s.id;
-          // Load history if not already loaded
-          if (s.messages.length === 0) {
-            await this.loadSessionHistory(s);
-          } else {
-            this.render();
-          }
-        });
+      archivedHeader.addEventListener('click', () => {
+        const isHidden = archivedList.style.display === 'none';
+        archivedList.style.display = isHidden ? 'flex' : 'none';
+        archivedToggle.textContent = isHidden ? '▲' : '▼';
+      });
 
-        // Delete button
-        const deleteBtn = sessionItem.createEl('button', { text: '×', cls: 'pilot-session-delete' });
-        deleteBtn.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          // Clear server session
-          try {
-            await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat/session?agentPath=${s.agentPath || ''}`, {
-              method: 'DELETE'
-            });
-          } catch (e) { /* ignore */ }
-          this.deleteSession(s.id);
-          this.render();
-        });
+      for (const s of archivedSessions) {
+        this.renderSessionItem(archivedList, s, true);
       }
     }
 
@@ -444,6 +712,51 @@ class AgentPilotView extends ItemView {
           }
         }
 
+        // Render collapsible debug info if present
+        if (msg.debug) {
+          const debugContainer = msgEl.createDiv({ cls: 'pilot-debug-container' });
+          const debugToggle = debugContainer.createEl('button', {
+            cls: 'pilot-debug-toggle',
+            text: `⏱ ${(msg.debug.durationMs! / 1000).toFixed(1)}s`
+          });
+          const debugContent = debugContainer.createDiv({ cls: 'pilot-debug-content' });
+          debugContent.style.display = 'none'; // Start collapsed
+
+          debugToggle.addEventListener('click', () => {
+            const isHidden = debugContent.style.display === 'none';
+            debugContent.style.display = isHidden ? 'block' : 'none';
+            debugToggle.classList.toggle('pilot-debug-expanded', isHidden);
+          });
+
+          const debugLines = [
+            `Model: ${msg.debug.model}`,
+            `Prompt: ${msg.debug.systemPromptLength.toLocaleString()} chars`,
+            `Resumed: ${msg.debug.resumedSession ? 'yes' : 'no'}`
+          ];
+
+          if (msg.debug.toolsAvailable && msg.debug.toolsAvailable.length > 0) {
+            debugLines.push(`Tools: ${msg.debug.toolsAvailable.join(', ')}`);
+          }
+
+          if (msg.debug.writePermissions && msg.debug.writePermissions.length > 0) {
+            debugLines.push(`Write: ${msg.debug.writePermissions.join(', ')}`);
+          }
+
+          for (const line of debugLines) {
+            debugContent.createDiv({ cls: 'pilot-debug-line', text: line });
+          }
+        }
+
+        // Render permission denials summary (deduplicated)
+        if (msg.permissionDenials && msg.permissionDenials.length > 0) {
+          const uniquePaths = [...new Set(msg.permissionDenials.map(d => d.filePath))];
+          const permEl = msgEl.createDiv({ cls: 'pilot-permission-denials' });
+          permEl.createEl('span', {
+            cls: 'pilot-permission-summary',
+            text: `⚠️ ${msg.permissionDenials.length} write(s) blocked: ${uniquePaths.map(p => p.split('/').pop()).join(', ')}`
+          });
+        }
+
         // Render content as markdown for assistant messages
         const contentEl = msgEl.createDiv({ cls: 'pilot-message-content' });
         if (msg.role === 'assistant' && msg.content) {
@@ -466,16 +779,78 @@ class AgentPilotView extends ItemView {
           contentEl.textContent = msg.content;
         }
 
-        msgEl.createEl('div', {
+        // Footer with time and copy button
+        const footerEl = msgEl.createDiv({ cls: 'pilot-message-footer' });
+
+        footerEl.createEl('span', {
           cls: 'pilot-message-time',
           text: msg.timestamp.toLocaleTimeString()
         });
+
+        // Add copy button for assistant messages
+        if (msg.role === 'assistant') {
+          const copyBtn = footerEl.createEl('button', {
+            cls: 'pilot-copy-btn',
+            attr: { 'aria-label': 'Copy message' }
+          });
+          copyBtn.innerHTML = '📋';
+          copyBtn.addEventListener('click', async () => {
+            try {
+              await navigator.clipboard.writeText(msg.content);
+              copyBtn.innerHTML = '✓';
+              setTimeout(() => { copyBtn.innerHTML = '📋'; }, 1500);
+            } catch (e) {
+              new Notice('Failed to copy to clipboard');
+            }
+          });
+        }
       }
 
       // Show loading indicator
       if (this.isLoading) {
         const loadingEl = messagesEl.createDiv({ cls: 'pilot-message pilot-message-loading' });
         loadingEl.createDiv({ cls: 'pilot-typing-indicator' });
+      }
+
+      // Show pending permission requests inline
+      if (this.pendingPermissionRequests.size > 0) {
+        for (const [id, request] of this.pendingPermissionRequests) {
+          const permEl = messagesEl.createDiv({ cls: 'pilot-message pilot-permission-request' });
+
+          permEl.createEl('div', {
+            cls: 'pilot-permission-title',
+            text: '🔐 Permission Request'
+          });
+
+          permEl.createEl('div', {
+            cls: 'pilot-permission-desc',
+            text: `Agent wants to write outside allowed paths:`
+          });
+
+          permEl.createEl('div', {
+            cls: 'pilot-permission-path',
+            text: request.filePath
+          });
+
+          permEl.createEl('div', {
+            cls: 'pilot-permission-allowed',
+            text: `Allowed: ${request.allowedPatterns.join(', ')}`
+          });
+
+          const btnContainer = permEl.createDiv({ cls: 'pilot-permission-actions' });
+
+          const denyBtn = btnContainer.createEl('button', {
+            cls: 'pilot-permission-deny',
+            text: 'Deny'
+          });
+          denyBtn.addEventListener('click', () => this.respondToPermission(id, false));
+
+          const allowBtn = btnContainer.createEl('button', {
+            cls: 'pilot-permission-allow',
+            text: 'Allow'
+          });
+          allowBtn.addEventListener('click', () => this.respondToPermission(id, true));
+        }
       }
     }
 
@@ -532,8 +907,6 @@ class AgentPilotView extends ItemView {
     this.isLoading = true;
     this.render();
 
-    const activeFile = this.app.workspace.getActiveFile();
-
     try {
       const response = await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat`, {
         method: 'POST',
@@ -541,18 +914,26 @@ class AgentPilotView extends ItemView {
         body: JSON.stringify({
           message: content,
           agentPath: session.agentPath,
-          documentPath: activeFile?.path
+          sessionId: session.id  // Send unique session ID for isolated conversations
         })
       });
 
       const data = await response.json();
+
+      // Build debug info with duration
+      const debug: DebugInfo | undefined = data.debug ? {
+        ...data.debug,
+        durationMs: data.durationMs
+      } : undefined;
 
       session.messages.push({
         role: 'assistant',
         content: data.response || data.error || 'No response',
         timestamp: new Date(),
         agentPath: data.agentPath,
-        toolCalls: data.toolCalls || undefined
+        toolCalls: data.toolCalls || undefined,
+        permissionDenials: data.permissionDenials || undefined,
+        debug
       });
 
       if (data.spawned?.length > 0) {
@@ -561,6 +942,11 @@ class AgentPilotView extends ItemView {
           content: `Spawned ${data.spawned.length} sub-agent(s)`,
           timestamp: new Date()
         });
+      }
+
+      // Show notification if there were permission denials
+      if (data.permissionDenials?.length > 0) {
+        new Notice(`${data.permissionDenials.length} write operation(s) were blocked by permissions`);
       }
 
     } catch (e) {
@@ -1004,6 +1390,26 @@ class AgentPilotView extends ItemView {
         height: 100%;
       }
 
+      /* Enable text selection - use !important to override Obsidian defaults */
+      .agent-pilot-view,
+      .agent-pilot-view *,
+      .agent-pilot-view .pilot-message-content,
+      .agent-pilot-view .pilot-markdown,
+      .agent-pilot-view .pilot-markdown * {
+        -webkit-user-select: text !important;
+        user-select: text !important;
+        cursor: auto;
+      }
+
+      /* Keep buttons non-selectable for better UX */
+      .agent-pilot-view button,
+      .agent-pilot-view .pilot-tab,
+      .agent-pilot-view .pilot-send-btn {
+        -webkit-user-select: none !important;
+        user-select: none !important;
+        cursor: pointer;
+      }
+
       .pilot-header {
         padding: 8px;
         border-bottom: 1px solid var(--background-modifier-border);
@@ -1144,6 +1550,80 @@ class AgentPilotView extends ItemView {
 
       .pilot-session-delete:hover {
         opacity: 1;
+      }
+
+      /* Session action buttons */
+      .pilot-session-actions {
+        display: flex;
+        gap: 4px;
+        margin-left: auto;
+        opacity: 0;
+        transition: opacity 0.15s;
+      }
+
+      .pilot-session-item:hover .pilot-session-actions {
+        opacity: 1;
+      }
+
+      .pilot-session-action {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 2px 4px;
+        font-size: 12px;
+        opacity: 0.6;
+        border-radius: 4px;
+      }
+
+      .pilot-session-action:hover {
+        opacity: 1;
+        background: var(--background-modifier-hover);
+      }
+
+      .pilot-session-action-delete:hover {
+        color: var(--text-error);
+      }
+
+      .pilot-session-archived {
+        opacity: 0.7;
+      }
+
+      /* Archived section */
+      .pilot-archived-section {
+        width: 100%;
+        margin-top: 8px;
+        padding-top: 8px;
+        border-top: 1px solid var(--background-modifier-border);
+      }
+
+      .pilot-archived-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 11px;
+        color: var(--text-muted);
+        border-radius: 4px;
+      }
+
+      .pilot-archived-header:hover {
+        background: var(--background-modifier-hover);
+      }
+
+      .pilot-archived-label {
+        font-weight: 500;
+      }
+
+      .pilot-archived-toggle {
+        font-size: 10px;
+      }
+
+      .pilot-archived-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        margin-top: 6px;
       }
 
       .pilot-chat-area {
@@ -1384,10 +1864,157 @@ class AgentPilotView extends ItemView {
         white-space: nowrap;
       }
 
+      /* Debug panel styles */
+      .pilot-debug-container {
+        margin-top: 8px;
+      }
+
+      .pilot-debug-toggle {
+        background: none;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 4px;
+        padding: 2px 8px;
+        font-size: 10px;
+        color: var(--text-muted);
+        cursor: pointer;
+        opacity: 0.6;
+      }
+
+      .pilot-debug-toggle:hover {
+        opacity: 1;
+        background: var(--background-primary);
+      }
+
+      .pilot-debug-toggle.pilot-debug-expanded {
+        opacity: 1;
+        border-color: var(--interactive-accent);
+      }
+
+      .pilot-debug-content {
+        margin-top: 6px;
+        padding: 8px;
+        background: var(--background-primary);
+        border-radius: 4px;
+        font-size: 11px;
+        font-family: monospace;
+      }
+
+      .pilot-debug-hidden {
+        display: none;
+      }
+
+      .pilot-debug-line {
+        color: var(--text-muted);
+        margin-bottom: 2px;
+      }
+
+      .pilot-debug-tools {
+        margin-top: 4px;
+        padding-top: 4px;
+        border-top: 1px solid var(--background-modifier-border);
+        word-break: break-word;
+      }
+
+      /* Permission denial summary */
+      .pilot-permission-denials {
+        margin-top: 6px;
+      }
+
+      .pilot-permission-summary {
+        font-size: 11px;
+        color: var(--text-warning);
+      }
+
+      .pilot-message-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 4px;
+      }
+
       .pilot-message-time {
         font-size: 10px;
         opacity: 0.5;
-        margin-top: 4px;
+      }
+
+      .pilot-copy-btn {
+        background: none;
+        border: none;
+        padding: 2px 6px;
+        cursor: pointer;
+        opacity: 0.4;
+        font-size: 12px;
+        border-radius: 4px;
+        transition: opacity 0.2s, background 0.2s;
+      }
+
+      .pilot-copy-btn:hover {
+        opacity: 1;
+        background: var(--background-modifier-hover);
+      }
+
+      /* Inline permission request styles */
+      .pilot-permission-request {
+        background: rgba(255, 200, 0, 0.1) !important;
+        border: 1px solid rgba(255, 200, 0, 0.3) !important;
+      }
+
+      .pilot-permission-title {
+        font-weight: 600;
+        margin-bottom: 8px;
+      }
+
+      .pilot-permission-desc {
+        font-size: 12px;
+        color: var(--text-muted);
+        margin-bottom: 4px;
+      }
+
+      .pilot-permission-path {
+        font-family: monospace;
+        font-size: 12px;
+        color: var(--text-accent);
+        word-break: break-all;
+        margin-bottom: 4px;
+        padding: 4px 8px;
+        background: var(--background-primary);
+        border-radius: 4px;
+      }
+
+      .pilot-permission-allowed {
+        font-size: 11px;
+        color: var(--text-muted);
+        margin-bottom: 12px;
+      }
+
+      .pilot-permission-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .pilot-permission-deny {
+        padding: 6px 16px;
+        border: 1px solid var(--background-modifier-border);
+        border-radius: 4px;
+        background: var(--background-secondary);
+        cursor: pointer;
+      }
+
+      .pilot-permission-deny:hover {
+        background: var(--background-modifier-hover);
+      }
+
+      .pilot-permission-allow {
+        padding: 6px 16px;
+        border: none;
+        border-radius: 4px;
+        background: var(--interactive-accent);
+        color: var(--text-on-accent);
+        cursor: pointer;
+      }
+
+      .pilot-permission-allow:hover {
+        opacity: 0.9;
       }
 
       .pilot-message-loading {

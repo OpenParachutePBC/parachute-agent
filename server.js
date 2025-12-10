@@ -75,14 +75,19 @@ async function findInVault(queryStr) {
  */
 app.post('/api/chat', async (req, res) => {
   try {
-    const { message, agentPath, documentPath } = req.body;
+    const { message, agentPath, documentPath, sessionId } = req.body;
+
+    console.log(`[API] Chat request: agent=${agentPath}, sessionId=${sessionId}`);
 
     if (!message) {
       return res.status(400).json({ error: 'message is required' });
     }
 
-    // Build context
+    // Build context - use sessionId as context key for unique sessions
     const context = {};
+    if (sessionId) {
+      context.sessionId = sessionId;
+    }
     if (documentPath) {
       context.documentPath = documentPath;
     }
@@ -102,7 +107,9 @@ app.post('/api/chat', async (req, res) => {
       documentPath: documentPath || null,
       sessionId: result.sessionId || null,
       messageCount: result.messageCount || 0,
-      toolCalls: result.toolCalls || undefined
+      toolCalls: result.toolCalls || undefined,
+      permissionDenials: result.permissionDenials || undefined,
+      debug: result.debug || undefined
     });
 
   } catch (error) {
@@ -178,6 +185,57 @@ app.delete('/api/chat/session', async (req, res) => {
 });
 
 /**
+ * POST /api/chat/session/:id/archive
+ * Archive a chat session
+ */
+app.post('/api/chat/session/:id/archive', async (req, res) => {
+  try {
+    const archived = await orchestrator.archiveSession(req.params.id);
+    if (archived) {
+      res.json({ archived: true, id: req.params.id });
+    } else {
+      res.status(404).json({ error: 'Session not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/chat/session/:id/unarchive
+ * Unarchive a chat session
+ */
+app.post('/api/chat/session/:id/unarchive', async (req, res) => {
+  try {
+    const unarchived = await orchestrator.unarchiveSession(req.params.id);
+    if (unarchived) {
+      res.json({ unarchived: true, id: req.params.id });
+    } else {
+      res.status(404).json({ error: 'Session not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/chat/session/:id
+ * Delete a chat session permanently
+ */
+app.delete('/api/chat/session/:id', async (req, res) => {
+  try {
+    const deleted = await orchestrator.deleteSessionById(req.params.id);
+    if (deleted) {
+      res.json({ deleted: true, id: req.params.id });
+    } else {
+      res.status(404).json({ error: 'Session not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/agents/spawn
  * Spawn an agent (add to queue)
  */
@@ -238,6 +296,97 @@ app.get('/api/queue', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+/**
+ * GET /api/permissions
+ * Get pending permission requests
+ */
+app.get('/api/permissions', async (req, res) => {
+  try {
+    const pending = orchestrator.getPendingPermissions();
+    res.json(pending);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/permissions/:id/grant
+ * Grant a permission request
+ */
+app.post('/api/permissions/:id/grant', async (req, res) => {
+  try {
+    const granted = orchestrator.grantPermission(req.params.id);
+    if (granted) {
+      res.json({ granted: true, id: req.params.id });
+    } else {
+      res.status(404).json({ error: 'Permission request not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/permissions/:id/deny
+ * Deny a permission request
+ */
+app.post('/api/permissions/:id/deny', async (req, res) => {
+  try {
+    const denied = orchestrator.denyPermission(req.params.id);
+    if (denied) {
+      res.json({ denied: true, id: req.params.id });
+    } else {
+      res.status(404).json({ error: 'Permission request not found' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/permissions/stream
+ * SSE endpoint for real-time permission request notifications
+ */
+app.get('/api/permissions/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+
+  // Send initial connection message
+  res.write('data: {"type":"connected"}\n\n');
+
+  // Listen for permission requests
+  const onPermissionRequest = (request) => {
+    res.write(`data: ${JSON.stringify({ type: 'permissionRequest', request })}\n\n`);
+  };
+
+  const onPermissionGranted = (request) => {
+    res.write(`data: ${JSON.stringify({ type: 'permissionGranted', request })}\n\n`);
+  };
+
+  const onPermissionDenied = (request) => {
+    res.write(`data: ${JSON.stringify({ type: 'permissionDenied', request })}\n\n`);
+  };
+
+  orchestrator.on('permissionRequest', onPermissionRequest);
+  orchestrator.on('permissionGranted', onPermissionGranted);
+  orchestrator.on('permissionDenied', onPermissionDenied);
+
+  // Send any existing pending permissions
+  const pending = orchestrator.getPendingPermissions();
+  for (const request of pending) {
+    res.write(`data: ${JSON.stringify({ type: 'permissionRequest', request })}\n\n`);
+  }
+
+  // Cleanup on close
+  req.on('close', () => {
+    orchestrator.off('permissionRequest', onPermissionRequest);
+    orchestrator.off('permissionGranted', onPermissionGranted);
+    orchestrator.off('permissionDenied', onPermissionDenied);
+  });
 });
 
 /**
