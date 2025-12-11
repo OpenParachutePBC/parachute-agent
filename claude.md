@@ -51,7 +51,7 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/agents` | GET | List agents |
-| `/api/chat` | POST | Send message (body: `{message, agentPath?, sessionId?}`) |
+| `/api/chat` | POST | Send message (body: `{message, agentPath?, sessionId?, initialContext?}`) |
 | `/api/chat/stream` | POST | Streaming chat via SSE (same body as `/api/chat`) |
 | `/api/chat/sessions` | GET | List all sessions |
 | `/api/chat/session/:id` | GET | Get session by ID with messages |
@@ -82,10 +82,11 @@ Additional context for the agent.
 
 ## Session Storage
 
-Sessions stored as markdown in `agent-chats/`:
+Sessions stored as markdown in `agent-sessions/`:
 - Human-readable format
 - YAML frontmatter with session metadata
 - Conversation as H3 headers with timestamps
+- Legacy paths (`agent-chats/`, `agent-logs/`) still indexed for migration
 
 ## Key Patterns
 
@@ -137,6 +138,12 @@ The `/api/chat/stream` endpoint returns SSE events for real-time UI updates:
 - `tool_use`: Tool being executed with name and input
 - `done`: Final result with toolCalls, durationMs, spawned, sessionResume
 - `error`: Error message if something went wrong
+
+### Initial Context
+Pass `initialContext` in the chat request body to provide context for new sessions:
+- Only used on first message (when `session.messages.length === 0`)
+- If `message` is empty, `initialContext` becomes the entire message (for passing transcripts/docs directly)
+- If both provided, formatted as: `## Context\n\n{initialContext}\n\n---\n\n## Request\n\n{message}`
 
 ### Error Handling
 - Agent execution errors returned in response

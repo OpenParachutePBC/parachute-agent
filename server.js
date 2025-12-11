@@ -75,7 +75,7 @@ async function findInVault(queryStr) {
  */
 app.post('/api/chat', async (req, res) => {
   try {
-    const { message, agentPath, documentPath, sessionId } = req.body;
+    const { message, agentPath, documentPath, sessionId, initialContext } = req.body;
 
     console.log(`[API] Chat request: agent=${agentPath}, sessionId=${sessionId}`);
 
@@ -90,6 +90,9 @@ app.post('/api/chat', async (req, res) => {
     }
     if (documentPath) {
       context.documentPath = documentPath;
+    }
+    if (initialContext) {
+      context.initialContext = initialContext;
     }
 
     // Run agent
@@ -132,7 +135,7 @@ app.post('/api/chat/stream', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
 
-  const { message, agentPath, sessionId } = req.body;
+  const { message, agentPath, sessionId, initialContext } = req.body;
 
   if (!message) {
     res.write(`data: ${JSON.stringify({ type: 'error', error: 'message is required' })}\n\n`);
@@ -145,6 +148,9 @@ app.post('/api/chat/stream', async (req, res) => {
   const context = {};
   if (sessionId) {
     context.sessionId = sessionId;
+  }
+  if (initialContext) {
+    context.initialContext = initialContext;
   }
 
   try {
