@@ -109,6 +109,7 @@ app.post('/api/chat', async (req, res) => {
       messageCount: result.messageCount || 0,
       toolCalls: result.toolCalls || undefined,
       permissionDenials: result.permissionDenials || undefined,
+      sessionResume: result.sessionResume || undefined,
       debug: result.debug || undefined
     });
 
@@ -152,7 +153,7 @@ app.get('/api/chat/history', async (req, res) => {
  */
 app.get('/api/chat/session/:id', async (req, res) => {
   try {
-    const session = orchestrator.getSessionById(req.params.id);
+    const session = await orchestrator.getSessionByIdAsync(req.params.id);
     if (!session) {
       return res.status(404).json({ error: 'Session not found' });
     }
@@ -293,6 +294,30 @@ app.get('/api/queue', async (req, res) => {
   try {
     const state = orchestrator.getQueueState();
     res.json(state);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stats
+ * Get system stats for debugging
+ */
+app.get('/api/stats', async (req, res) => {
+  try {
+    const sessionStats = orchestrator.getSessionStats();
+    const queueState = orchestrator.getQueueState();
+
+    res.json({
+      sessions: sessionStats,
+      queue: {
+        pending: queueState.pending?.length || 0,
+        running: queueState.running?.length || 0,
+        completed: queueState.completed?.length || 0
+      },
+      uptime: process.uptime(),
+      memory: process.memoryUsage()
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

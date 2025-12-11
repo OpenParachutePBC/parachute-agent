@@ -58,6 +58,7 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 | `/api/chat/session/:id/unarchive` | POST | Unarchive a session |
 | `/api/chat/session/:id` | DELETE | Delete session permanently |
 | `/api/chat/session` | DELETE | Clear session (legacy) |
+| `/api/stats` | GET | Get session stats and memory usage |
 | `/api/permissions/stream` | GET | SSE stream for permission requests |
 | `/api/permissions/:id/grant` | POST | Grant a pending permission |
 | `/api/permissions/:id/deny` | POST | Deny a pending permission |
@@ -87,13 +88,40 @@ Sessions stored as markdown in `agent-chats/`:
 
 ## Key Patterns
 
+### Session Architecture (Lazy Loading)
+Sessions use a two-tier architecture:
+- **Index** (`sessionIndex`): Lightweight, loaded at startup. Contains metadata only.
+- **Loaded Sessions** (`loadedSessions`): Full content loaded on-demand from markdown.
+- **Active SDK Sessions** (`activeSessions`): Ephemeral, may expire.
+
 ### SDK Session Resumption
-The `sdk_session_id` in frontmatter enables conversation resumption. Always validate this value - must be a valid string, not `[object Object]`.
+The `sdk_session_id` in frontmatter enables conversation resumption:
+- Try SDK resume first (fastest, if session still alive on Anthropic's servers)
+- If unavailable/expired, inject context from markdown history
+- Context injection: Last N messages that fit in ~50k tokens
+- New SDK session ID captured and saved to markdown
+
+### Session Resume Debug Info
+Every chat response includes `sessionResume` with:
+```json
+{
+  "method": "sdk_resume | context_injection | new",
+  "sdkSessionValid": true,
+  "sdkResumeAttempted": true,
+  "contextInjected": false,
+  "messagesInjected": 0,
+  "tokensEstimate": 0,
+  "previousMessageCount": 10,
+  "loadedFromDisk": true,
+  "cacheHit": false
+}
+```
 
 ### Session Management
 - Each chat gets a unique `sessionId` for isolation
 - Sessions track `archived` status (persisted in YAML)
 - Plugin uses `serverId` for history fetch vs `id` for API routing
+- Stale sessions evicted from memory after 30 min
 
 ### Permission System
 - Agents define `write_permissions` as glob patterns in frontmatter
