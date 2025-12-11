@@ -108,6 +108,11 @@ interface ToolCall {
   result?: string;
 }
 
+// Stream event for sequential rendering
+type StreamEvent =
+  | { type: 'text'; content: string }
+  | { type: 'tool'; tool: ToolCall };
+
 // PermissionRequest interface is defined above (near the Modal class)
 
 interface DebugInfo {
@@ -127,6 +132,7 @@ interface ChatMessage {
   timestamp: Date;
   agentPath?: string;
   toolCalls?: ToolCall[];
+  stream?: StreamEvent[];  // Sequential stream of events for real-time display
   permissionDenials?: { toolName: string; filePath: string; reason: string }[];
   debug?: DebugInfo;
 }
@@ -287,6 +293,15 @@ class AgentPilotView extends ItemView {
 
   private handlePermissionRequest(request: PermissionRequest): void {
     this.pendingPermissionRequests.set(request.id, request);
+
+    // Show a prominent notice to alert the user
+    new Notice(`Permission request from ${request.agentName}: Write to ${request.filePath}`, 10000);
+
+    // Switch to chat tab if not already there
+    if (this.currentTab !== 'chat') {
+      this.currentTab = 'chat';
+    }
+
     // Re-render to show inline permission request
     this.render();
   }
@@ -693,55 +708,7 @@ class AgentPilotView extends ItemView {
           });
         }
 
-        // Render tool calls if present (collapsible)
-        if (msg.toolCalls && msg.toolCalls.length > 0) {
-          const toolsContainer = msgEl.createDiv({ cls: 'pilot-tool-calls-container' });
-
-          // Header with count (clickable to expand/collapse)
-          const toolsHeader = toolsContainer.createDiv({ cls: 'pilot-tool-calls-header' });
-          toolsHeader.createEl('span', { cls: 'pilot-tool-calls-icon', text: '▶' });
-          toolsHeader.createEl('span', {
-            cls: 'pilot-tool-calls-label',
-            text: `${msg.toolCalls.length} tool call${msg.toolCalls.length > 1 ? 's' : ''}`
-          });
-
-          // Tool calls list (initially collapsed)
-          const toolsEl = toolsContainer.createDiv({ cls: 'pilot-tool-calls pilot-tool-calls-collapsed' });
-
-          toolsHeader.addEventListener('click', () => {
-            const icon = toolsHeader.querySelector('.pilot-tool-calls-icon');
-            if (toolsEl.hasClass('pilot-tool-calls-collapsed')) {
-              toolsEl.removeClass('pilot-tool-calls-collapsed');
-              if (icon) icon.textContent = '▼';
-            } else {
-              toolsEl.addClass('pilot-tool-calls-collapsed');
-              if (icon) icon.textContent = '▶';
-            }
-          });
-
-          for (const tool of msg.toolCalls) {
-            const toolEl = toolsEl.createDiv({ cls: 'pilot-tool-call' });
-            const toolHeader = toolEl.createDiv({ cls: 'pilot-tool-header' });
-            toolHeader.createEl('span', { cls: 'pilot-tool-icon', text: '⚡' });
-            toolHeader.createEl('span', { cls: 'pilot-tool-name', text: tool.name });
-
-            // Show input summary if present (with full path in title)
-            if (tool.input) {
-              const fullPath = this.summarizeToolInput(tool.name, tool.input);
-              if (fullPath) {
-                // Show just the filename, full path on hover
-                const shortName = fullPath.split('/').pop() || fullPath;
-                toolHeader.createEl('span', {
-                  cls: 'pilot-tool-input',
-                  text: shortName,
-                  attr: { title: fullPath }
-                });
-              }
-            }
-          }
-        }
-
-        // Render collapsible debug info if present
+        // Render debug info if present (at top, collapsible)
         if (msg.debug) {
           const debugContainer = msgEl.createDiv({ cls: 'pilot-debug-container' });
           const debugToggle = debugContainer.createEl('button', {
@@ -786,25 +753,119 @@ class AgentPilotView extends ItemView {
           });
         }
 
-        // Render content as markdown for assistant messages
+        // Render message content - use sequential stream if available, otherwise legacy rendering
         const contentEl = msgEl.createDiv({ cls: 'pilot-message-content' });
-        if (msg.role === 'assistant' && msg.content) {
-          // Get active file path for proper link resolution, fallback to plugin file
-          const sourcePath = this.app.workspace.getActiveFile()?.path ?? 'agent-pilot-chat';
+        const sourcePath = this.app.workspace.getActiveFile()?.path ?? 'agent-pilot-chat';
 
-          // Create a container for rendered markdown
-          const markdownContainer = contentEl.createDiv({ cls: 'pilot-markdown' });
+        if (msg.stream && msg.stream.length > 0 && msg.role === 'assistant') {
+          // Sequential stream rendering - interleaved tool calls and text
+          for (const event of msg.stream) {
+            if (event.type === 'tool') {
+              // Render inline collapsible tool call
+              const toolEl = contentEl.createDiv({ cls: 'pilot-stream-tool' });
+              const toolHeader = toolEl.createDiv({ cls: 'pilot-stream-tool-header' });
+              toolHeader.createEl('span', { cls: 'pilot-stream-tool-icon', text: '▶' });
+              toolHeader.createEl('span', { cls: 'pilot-stream-tool-name', text: event.tool.name });
 
-          // Use async render with error handling
-          MarkdownRenderer.render(this.app, msg.content, markdownContainer, sourcePath, this)
-            .then(() => {
-              console.log('[Agent Pilot] Markdown rendered successfully');
-            })
-            .catch((e: Error) => {
-              console.error('[Agent Pilot] Markdown render failed:', e);
-              markdownContainer.textContent = msg.content;
+              // Show input summary if present
+              if (event.tool.input) {
+                const fullPath = this.summarizeToolInput(event.tool.name, event.tool.input);
+                if (fullPath) {
+                  const shortName = fullPath.split('/').pop() || fullPath;
+                  toolHeader.createEl('span', {
+                    cls: 'pilot-stream-tool-input',
+                    text: shortName,
+                    attr: { title: fullPath }
+                  });
+                }
+              }
+
+              // Expandable details (initially collapsed)
+              const toolDetails = toolEl.createDiv({ cls: 'pilot-stream-tool-details pilot-collapsed' });
+              if (event.tool.input) {
+                toolDetails.createEl('pre', {
+                  cls: 'pilot-stream-tool-json',
+                  text: JSON.stringify(event.tool.input, null, 2)
+                });
+              }
+
+              // Toggle on header click
+              toolHeader.addEventListener('click', () => {
+                const icon = toolHeader.querySelector('.pilot-stream-tool-icon');
+                if (toolDetails.hasClass('pilot-collapsed')) {
+                  toolDetails.removeClass('pilot-collapsed');
+                  if (icon) icon.textContent = '▼';
+                } else {
+                  toolDetails.addClass('pilot-collapsed');
+                  if (icon) icon.textContent = '▶';
+                }
+              });
+            } else if (event.type === 'text') {
+              // Render text block as markdown
+              const textEl = contentEl.createDiv({ cls: 'pilot-stream-text pilot-markdown' });
+              MarkdownRenderer.render(this.app, event.content, textEl, sourcePath, this)
+                .catch((e: Error) => {
+                  console.error('[Agent Pilot] Markdown render failed:', e);
+                  textEl.textContent = event.content;
+                });
+            }
+          }
+        } else if (msg.role === 'assistant') {
+          // Legacy rendering for messages without stream data
+          // Render tool calls first (collapsible block)
+          if (msg.toolCalls && msg.toolCalls.length > 0) {
+            const toolsContainer = contentEl.createDiv({ cls: 'pilot-tool-calls-container' });
+            const toolsHeader = toolsContainer.createDiv({ cls: 'pilot-tool-calls-header' });
+            toolsHeader.createEl('span', { cls: 'pilot-tool-calls-icon', text: '▶' });
+            toolsHeader.createEl('span', {
+              cls: 'pilot-tool-calls-label',
+              text: `${msg.toolCalls.length} tool call${msg.toolCalls.length > 1 ? 's' : ''}`
             });
+
+            const toolsEl = toolsContainer.createDiv({ cls: 'pilot-tool-calls pilot-tool-calls-collapsed' });
+
+            toolsHeader.addEventListener('click', () => {
+              const icon = toolsHeader.querySelector('.pilot-tool-calls-icon');
+              if (toolsEl.hasClass('pilot-tool-calls-collapsed')) {
+                toolsEl.removeClass('pilot-tool-calls-collapsed');
+                if (icon) icon.textContent = '▼';
+              } else {
+                toolsEl.addClass('pilot-tool-calls-collapsed');
+                if (icon) icon.textContent = '▶';
+              }
+            });
+
+            for (const tool of msg.toolCalls) {
+              const toolEl = toolsEl.createDiv({ cls: 'pilot-tool-call' });
+              const toolHeader = toolEl.createDiv({ cls: 'pilot-tool-header' });
+              toolHeader.createEl('span', { cls: 'pilot-tool-icon', text: '⚡' });
+              toolHeader.createEl('span', { cls: 'pilot-tool-name', text: tool.name });
+
+              if (tool.input) {
+                const fullPath = this.summarizeToolInput(tool.name, tool.input);
+                if (fullPath) {
+                  const shortName = fullPath.split('/').pop() || fullPath;
+                  toolHeader.createEl('span', {
+                    cls: 'pilot-tool-input',
+                    text: shortName,
+                    attr: { title: fullPath }
+                  });
+                }
+              }
+            }
+          }
+
+          // Render content as markdown
+          if (msg.content) {
+            const markdownContainer = contentEl.createDiv({ cls: 'pilot-markdown' });
+            MarkdownRenderer.render(this.app, msg.content, markdownContainer, sourcePath, this)
+              .catch((e: Error) => {
+                console.error('[Agent Pilot] Markdown render failed:', e);
+                markdownContainer.textContent = msg.content;
+              });
+          }
         } else {
+          // User messages - plain text
           contentEl.textContent = msg.content;
         }
 
@@ -1040,7 +1101,135 @@ class AgentPilotView extends ItemView {
   }
 
   /**
+   * Send a message with additional context (e.g., document content for doc agents)
+   */
+  private async sendMessageWithContext(
+    content: string,
+    context: { documentPath?: string; documentContent?: string }
+  ): Promise<void> {
+    if (!content.trim() || this.isLoading) return;
+
+    const session = this.getCurrentSession();
+    if (!session) return;
+
+    // Build the full message including document context
+    let fullMessage = content;
+    if (context.documentContent) {
+      fullMessage = `${content}\n\n---\n\n# Document Content\n\n${context.documentContent}`;
+    }
+
+    session.messages.push({ role: 'user', content, timestamp: new Date() });
+    this.isLoading = true;
+    this.render();
+
+    // Create a placeholder message for streaming content
+    const assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      toolCalls: []
+    };
+    session.messages.push(assistantMessage);
+
+    // Track streaming state
+    let currentToolCalls: ToolCall[] = [];
+    let finalData: any = null;
+
+    try {
+      const response = await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: fullMessage,
+          agentPath: session.agentPath,
+          sessionId: session.id,
+          initialContext: context.documentContent ? {
+            documentPath: context.documentPath,
+            documentContent: context.documentContent
+          } : undefined
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6));
+              this.handleStreamEvent(event, assistantMessage, currentToolCalls, session);
+              if (event.type === 'done' || event.type === 'error') {
+                finalData = event;
+              }
+            } catch (e) {
+              console.error('[Agent Pilot] Failed to parse SSE event:', e);
+            }
+          }
+        }
+      }
+
+      // Handle final data
+      if (finalData) {
+        if (finalData.type === 'done') {
+          assistantMessage.toolCalls = finalData.toolCalls || currentToolCalls;
+          assistantMessage.permissionDenials = finalData.permissionDenials;
+          assistantMessage.debug = {
+            systemPromptLength: 0,
+            messageLength: content.length,
+            agentPath: session.agentPath || 'vault-agent',
+            model: 'default',
+            toolsAvailable: [],
+            resumedSession: finalData.sessionResume?.method !== 'new',
+            durationMs: finalData.durationMs
+          };
+
+          if (finalData.spawned?.length > 0) {
+            session.messages.push({
+              role: 'system',
+              content: `Spawned ${finalData.spawned.length} sub-agent(s)`,
+              timestamp: new Date()
+            });
+          }
+
+          if (finalData.permissionDenials?.length > 0) {
+            new Notice(`${finalData.permissionDenials.length} write operation(s) were blocked by permissions`);
+          }
+        } else if (finalData.type === 'error') {
+          assistantMessage.content = `Error: ${finalData.error}`;
+        }
+      }
+
+    } catch (e) {
+      assistantMessage.content = `Error: ${(e as Error).message}`;
+    } finally {
+      this.isLoading = false;
+    }
+
+    this.render();
+  }
+
+  /**
    * Handle individual streaming events
+   * Builds a sequential stream of events for proper timeline display
    */
   private handleStreamEvent(
     event: any,
@@ -1048,6 +1237,11 @@ class AgentPilotView extends ItemView {
     toolCalls: ToolCall[],
     session: ChatSession
   ): void {
+    // Initialize stream if not present
+    if (!message.stream) {
+      message.stream = [];
+    }
+
     switch (event.type) {
       case 'session':
         // Session info received
@@ -1060,24 +1254,34 @@ class AgentPilotView extends ItemView {
         break;
 
       case 'text':
-        // Text content (incremental or full)
+        // Text content - update the last text event or add new one
+        // We update in place because text arrives incrementally
+        const lastEvent = message.stream[message.stream.length - 1];
+        if (lastEvent && lastEvent.type === 'text') {
+          lastEvent.content = event.content;
+        } else {
+          message.stream.push({ type: 'text', content: event.content });
+        }
         message.content = event.content;
         this.render();
         break;
 
       case 'tool_use':
-        // Tool being used
+        // Tool being used - add to stream as a new event
         const tool: ToolCall = {
           name: event.tool.name,
           input: event.tool.input
         };
         toolCalls.push(tool);
         message.toolCalls = [...toolCalls];
+        // Add tool to stream - this creates the sequential ordering
+        message.stream.push({ type: 'tool', tool });
         this.render();
         break;
 
       case 'error':
         message.content = `Error: ${event.error}`;
+        message.stream.push({ type: 'text', content: `Error: ${event.error}` });
         this.render();
         break;
 
@@ -1287,31 +1491,26 @@ class AgentPilotView extends ItemView {
     }
 
     try {
-      // Use spawn endpoint so doc agents appear in activity queue
-      const response = await fetch(`${this.plugin.settings.orchestratorUrl}/api/agents/spawn`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          agentPath: agentPath,
-          message: 'Process this document.',
-          context: {
-            documentPath: activeFile.path
-          }
-        })
-      });
+      // Read the document content
+      const content = await this.app.vault.read(activeFile);
 
-      const data = await response.json();
+      // Create a chat session for this agent
+      const session = this.createSession(agentPath);
 
-      if (data.error) {
-        new Notice(`Error: ${data.error}`);
-      } else {
-        new Notice(`Running ${agentPath.replace('agents/', '').replace('.md', '')} on ${activeFile.name}`);
-        // Switch to activity tab to show progress
-        this.currentTab = 'activity';
-        await this.refreshQueue();
-      }
+      // Switch to chat tab to show streaming UI
+      this.currentTab = 'chat';
+      this.render();
+
+      // Send the initial message with document context
+      await this.sendMessageWithContext(
+        `Process this document: ${activeFile.path}`,
+        {
+          documentPath: activeFile.path,
+          documentContent: content
+        }
+      );
     } catch (e) {
-      new Notice(`Error: ${e.message}`);
+      new Notice(`Error: ${(e as Error).message}`);
     }
   }
 
@@ -2022,6 +2221,78 @@ class AgentPilotView extends ItemView {
         white-space: nowrap;
       }
 
+      /* Sequential stream rendering styles */
+      .pilot-stream-tool {
+        margin: 8px 0;
+        border-radius: 6px;
+        background: var(--background-primary);
+        border-left: 3px solid var(--interactive-accent);
+        overflow: hidden;
+      }
+
+      .pilot-stream-tool-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .pilot-stream-tool-header:hover {
+        background: var(--background-modifier-hover);
+      }
+
+      .pilot-stream-tool-icon {
+        font-size: 10px;
+        width: 12px;
+        color: var(--text-muted);
+      }
+
+      .pilot-stream-tool-name {
+        font-weight: 600;
+        color: var(--interactive-accent);
+      }
+
+      .pilot-stream-tool-input {
+        color: var(--text-muted);
+        font-family: monospace;
+        font-size: 11px;
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .pilot-stream-tool-details {
+        padding: 8px 10px;
+        border-top: 1px solid var(--background-modifier-border);
+        background: var(--background-secondary);
+      }
+
+      .pilot-stream-tool-details.pilot-collapsed {
+        display: none;
+      }
+
+      .pilot-stream-tool-json {
+        margin: 0;
+        padding: 8px;
+        background: var(--background-primary);
+        border-radius: 4px;
+        font-size: 10px;
+        overflow-x: auto;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+
+      .pilot-stream-text {
+        margin: 4px 0;
+      }
+
+      .pilot-collapsed {
+        display: none;
+      }
+
       /* Debug panel styles */
       .pilot-debug-container {
         margin-top: 8px;
@@ -2574,6 +2845,222 @@ class ResultModal extends Modal {
 }
 
 // ============================================================================
+// MCP SERVER MANAGEMENT
+// ============================================================================
+
+interface McpServer {
+  name: string;
+  command?: string;
+  args?: string[];
+  type?: string;
+  url?: string;
+  displayType: string;
+  displayCommand: string;
+}
+
+class McpServerModal extends Modal {
+  private plugin: AgentPilotPlugin;
+  private serverName: string = '';
+  private serverType: 'stdio' | 'sse' = 'stdio';
+  private command: string = '';
+  private args: string = '';
+  private url: string = '';
+  private isEdit: boolean = false;
+  private onSave: () => void;
+
+  constructor(app: App, plugin: AgentPilotPlugin, onSave: () => void, existing?: McpServer) {
+    super(app);
+    this.plugin = plugin;
+    this.onSave = onSave;
+    if (existing) {
+      this.isEdit = true;
+      this.serverName = existing.name;
+      if (existing.command) {
+        this.serverType = 'stdio';
+        this.command = existing.command;
+        this.args = (existing.args || []).join(' ');
+      } else if (existing.url) {
+        this.serverType = 'sse';
+        this.url = existing.url;
+      }
+    }
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass('mcp-server-modal');
+
+    contentEl.createEl('h2', { text: this.isEdit ? 'Edit MCP Server' : 'Add MCP Server' });
+
+    // Server Name
+    const nameContainer = contentEl.createDiv({ cls: 'setting-item' });
+    nameContainer.createEl('div', { cls: 'setting-item-info' })
+      .createEl('div', { cls: 'setting-item-name', text: 'Server Name' });
+    const nameInput = nameContainer.createEl('input', {
+      type: 'text',
+      placeholder: 'e.g., browser',
+      value: this.serverName
+    });
+    nameInput.style.width = '100%';
+    if (this.isEdit) nameInput.disabled = true;
+    nameInput.addEventListener('input', (e) => {
+      this.serverName = (e.target as HTMLInputElement).value;
+    });
+
+    // Server Type
+    const typeContainer = contentEl.createDiv({ cls: 'setting-item' });
+    typeContainer.createEl('div', { cls: 'setting-item-info' })
+      .createEl('div', { cls: 'setting-item-name', text: 'Server Type' });
+    const typeSelect = typeContainer.createEl('select');
+    typeSelect.style.width = '100%';
+    const stdioOption = typeSelect.createEl('option', { text: 'Stdio (command)', value: 'stdio' });
+    const sseOption = typeSelect.createEl('option', { text: 'SSE (URL)', value: 'sse' });
+    if (this.serverType === 'sse') sseOption.selected = true;
+    else stdioOption.selected = true;
+
+    // Stdio fields container
+    const stdioContainer = contentEl.createDiv({ cls: 'mcp-stdio-fields' });
+
+    const cmdContainer = stdioContainer.createDiv({ cls: 'setting-item' });
+    cmdContainer.createEl('div', { cls: 'setting-item-info' })
+      .createEl('div', { cls: 'setting-item-name', text: 'Command' });
+    const cmdInput = cmdContainer.createEl('input', {
+      type: 'text',
+      placeholder: 'e.g., npx',
+      value: this.command
+    });
+    cmdInput.style.width = '100%';
+    cmdInput.addEventListener('input', (e) => {
+      this.command = (e.target as HTMLInputElement).value;
+    });
+
+    const argsContainer = stdioContainer.createDiv({ cls: 'setting-item' });
+    argsContainer.createEl('div', { cls: 'setting-item-info' })
+      .createEl('div', { cls: 'setting-item-name', text: 'Arguments (space-separated)' });
+    const argsInput = argsContainer.createEl('input', {
+      type: 'text',
+      placeholder: 'e.g., @browsermcp/mcp@latest',
+      value: this.args
+    });
+    argsInput.style.width = '100%';
+    argsInput.addEventListener('input', (e) => {
+      this.args = (e.target as HTMLInputElement).value;
+    });
+
+    // SSE fields container
+    const sseContainer = contentEl.createDiv({ cls: 'mcp-sse-fields' });
+
+    const urlContainer = sseContainer.createDiv({ cls: 'setting-item' });
+    urlContainer.createEl('div', { cls: 'setting-item-info' })
+      .createEl('div', { cls: 'setting-item-name', text: 'Server URL' });
+    const urlInput = urlContainer.createEl('input', {
+      type: 'text',
+      placeholder: 'e.g., http://localhost:8080',
+      value: this.url
+    });
+    urlInput.style.width = '100%';
+    urlInput.addEventListener('input', (e) => {
+      this.url = (e.target as HTMLInputElement).value;
+    });
+
+    // Show/hide based on type
+    const updateVisibility = () => {
+      if (this.serverType === 'stdio') {
+        stdioContainer.style.display = 'block';
+        sseContainer.style.display = 'none';
+      } else {
+        stdioContainer.style.display = 'none';
+        sseContainer.style.display = 'block';
+      }
+    };
+    updateVisibility();
+
+    typeSelect.addEventListener('change', (e) => {
+      this.serverType = (e.target as HTMLSelectElement).value as 'stdio' | 'sse';
+      updateVisibility();
+    });
+
+    // Buttons
+    const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+    buttonContainer.style.marginTop = '16px';
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.justifyContent = 'flex-end';
+    buttonContainer.style.gap = '8px';
+
+    const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => this.close());
+
+    const saveBtn = buttonContainer.createEl('button', { text: 'Save', cls: 'mod-cta' });
+    saveBtn.addEventListener('click', async () => {
+      if (!this.serverName.trim()) {
+        new Notice('Server name is required');
+        return;
+      }
+
+      let config: any;
+      if (this.serverType === 'stdio') {
+        if (!this.command.trim()) {
+          new Notice('Command is required');
+          return;
+        }
+        config = {
+          command: this.command.trim(),
+          args: this.args.trim() ? this.args.trim().split(/\s+/) : []
+        };
+      } else {
+        if (!this.url.trim()) {
+          new Notice('URL is required');
+          return;
+        }
+        config = {
+          type: 'sse',
+          url: this.url.trim()
+        };
+      }
+
+      try {
+        const response = await fetch(
+          `${this.plugin.settings.orchestratorUrl}/api/mcp/${encodeURIComponent(this.serverName.trim())}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(config)
+          }
+        );
+
+        if (!response.ok) {
+          const err = await response.json();
+          throw new Error(err.error || 'Failed to save server');
+        }
+
+        new Notice(`MCP server "${this.serverName}" saved`);
+        this.onSave();
+        this.close();
+      } catch (e) {
+        new Notice(`Error: ${e.message}`);
+      }
+    });
+
+    // Add styles
+    const style = contentEl.createEl('style');
+    style.textContent = `
+      .mcp-server-modal .setting-item { margin-bottom: 12px; }
+      .mcp-server-modal .setting-item-name { font-weight: 500; margin-bottom: 4px; }
+      .mcp-server-modal input, .mcp-server-modal select {
+        padding: 8px;
+        border-radius: 4px;
+        border: 1px solid var(--background-modifier-border);
+      }
+    `;
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+// ============================================================================
 // SETTINGS TAB
 // ============================================================================
 
@@ -2644,6 +3131,104 @@ class AgentPilotSettingTab extends PluginSettingTab {
         statusEl.style.color = 'var(--text-error)';
       }
     });
+
+    // MCP Servers section
+    containerEl.createEl('h2', { text: 'MCP Servers', cls: 'mcp-settings-header' });
+    containerEl.createEl('p', {
+      text: 'Configure MCP servers for browser automation and other capabilities. These are stored in .mcp.json at your vault root.',
+      cls: 'setting-item-description'
+    });
+
+    const mcpContainer = containerEl.createDiv({ cls: 'mcp-servers-container' });
+    const mcpListEl = mcpContainer.createDiv({ cls: 'mcp-servers-list' });
+
+    // Add Server button
+    const addBtnContainer = containerEl.createDiv({ cls: 'mcp-add-container' });
+    const addBtn = addBtnContainer.createEl('button', { text: 'Add MCP Server', cls: 'mod-cta' });
+    addBtn.addEventListener('click', () => {
+      new McpServerModal(this.app, this.plugin, () => this.loadMcpServers(mcpListEl)).open();
+    });
+
+    // Load servers initially
+    this.loadMcpServers(mcpListEl);
+
+    // Add styles for MCP section
+    const mcpStyle = containerEl.createEl('style');
+    mcpStyle.textContent = `
+      .mcp-settings-header { margin-top: 32px; }
+      .mcp-servers-list { margin: 16px 0; }
+      .mcp-server-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        background: var(--background-secondary);
+        border-radius: 6px;
+        margin-bottom: 8px;
+      }
+      .mcp-server-info { flex: 1; }
+      .mcp-server-name { font-weight: 600; }
+      .mcp-server-details { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+      .mcp-server-actions { display: flex; gap: 8px; }
+      .mcp-server-actions button { padding: 4px 8px; font-size: 12px; }
+      .mcp-add-container { margin-top: 8px; }
+      .mcp-empty { color: var(--text-muted); font-style: italic; padding: 16px; text-align: center; }
+    `;
+  }
+
+  private async loadMcpServers(listEl: HTMLElement): Promise<void> {
+    listEl.empty();
+
+    try {
+      const response = await fetch(`${this.plugin.settings.orchestratorUrl}/api/mcp`);
+      if (!response.ok) throw new Error('Failed to fetch MCP servers');
+
+      const servers: McpServer[] = await response.json();
+
+      if (servers.length === 0) {
+        listEl.createDiv({ cls: 'mcp-empty', text: 'No MCP servers configured yet.' });
+        return;
+      }
+
+      for (const server of servers) {
+        const itemEl = listEl.createDiv({ cls: 'mcp-server-item' });
+
+        const infoEl = itemEl.createDiv({ cls: 'mcp-server-info' });
+        infoEl.createDiv({ cls: 'mcp-server-name', text: server.name });
+        infoEl.createDiv({
+          cls: 'mcp-server-details',
+          text: `${server.displayType}: ${server.displayCommand}`
+        });
+
+        const actionsEl = itemEl.createDiv({ cls: 'mcp-server-actions' });
+
+        const editBtn = actionsEl.createEl('button', { text: 'Edit' });
+        editBtn.addEventListener('click', () => {
+          new McpServerModal(this.app, this.plugin, () => this.loadMcpServers(listEl), server).open();
+        });
+
+        const deleteBtn = actionsEl.createEl('button', { text: 'Delete', cls: 'mod-warning' });
+        deleteBtn.addEventListener('click', async () => {
+          if (confirm(`Delete MCP server "${server.name}"?`)) {
+            try {
+              await fetch(
+                `${this.plugin.settings.orchestratorUrl}/api/mcp/${encodeURIComponent(server.name)}`,
+                { method: 'DELETE' }
+              );
+              new Notice(`Deleted MCP server "${server.name}"`);
+              this.loadMcpServers(listEl);
+            } catch (e) {
+              new Notice(`Error: ${e.message}`);
+            }
+          }
+        });
+      }
+    } catch (e) {
+      listEl.createDiv({
+        cls: 'mcp-empty',
+        text: `Error loading servers: ${e.message}. Make sure the orchestrator is running.`
+      });
+    }
   }
 }
 

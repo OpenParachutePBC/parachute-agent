@@ -35,6 +35,7 @@ Parachute Agent is the backend for Parachute - an AI agent system that uses mark
 | `lib/session-manager.js` | Session persistence as markdown |
 | `lib/agent-loader.js` | Load agent definitions from markdown |
 | `lib/vault-utils.js` | Shared file utilities |
+| `lib/mcp-loader.js` | MCP server configuration management |
 | `obsidian-plugin/main.ts` | Optional Obsidian plugin |
 
 ## Commands
@@ -63,6 +64,9 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 | `/api/permissions/stream` | GET | SSE stream for permission requests |
 | `/api/permissions/:id/grant` | POST | Grant a pending permission |
 | `/api/permissions/:id/deny` | POST | Deny a pending permission |
+| `/api/mcp` | GET | List all MCP server configurations |
+| `/api/mcp/:name` | POST | Add or update an MCP server |
+| `/api/mcp/:name` | DELETE | Remove an MCP server |
 
 ## Agent Definition Format
 
@@ -148,6 +152,117 @@ Pass `initialContext` in the chat request body to provide context for new sessio
 ### Error Handling
 - Agent execution errors returned in response
 - Session manager logs errors but doesn't throw on save failures
+
+### Skills (Claude Agent SDK Skills)
+Skills extend agents with specialized capabilities. They're loaded from `{vault}/.claude/skills/`.
+
+Skills are filesystem-based packages of instructions that Claude uses automatically when relevant to the task. Claude reads the skill's SKILL.md and follows its instructions, executing any scripts or code via bash.
+
+**How skills work:**
+1. Skills are discovered at startup from `.claude/skills/*/SKILL.md`
+2. Only the skill description is loaded initially (~100 tokens per skill)
+3. When triggered by a relevant request, Claude reads the full SKILL.md
+4. Claude follows the instructions, running scripts via bash
+
+**To use skills:**
+1. Install skill into `{vault}/.claude/skills/{skill-name}/SKILL.md`
+2. Include `"Skill"` in agent's `tools` array (or use default tools)
+3. Claude automatically invokes relevant skills based on user requests
+
+**Example: dev-browser skill (browser automation)**
+```bash
+# Install dev-browser skill
+git clone --depth 1 https://github.com/SawyerHood/dev-browser.git /tmp/dev-browser
+mkdir -p {vault}/.claude/skills
+cp -r /tmp/dev-browser/skills/dev-browser {vault}/.claude/skills/
+cd {vault}/.claude/skills/dev-browser && bun install
+```
+
+**Agent with skills:**
+```markdown
+---
+agent:
+  name: web-researcher
+  permissions:
+    tools: [Read, Write, Glob, Grep, Bash, Skill]
+---
+```
+
+**Note:** Skills handle their own server processes. For example, dev-browser's SKILL.md tells Claude to run `./server.sh &` before executing browser scripts. The SDK doesn't automatically manage skill servers.
+
+### MCP Servers (Browser Automation)
+Agents can connect to MCP (Model Context Protocol) servers for extended capabilities like browser automation.
+
+**Global MCP Configuration (`.mcp.json`):**
+MCP servers can be defined globally at your vault root in `.mcp.json`. This allows multiple agents to reference the same servers without duplication.
+
+```json
+{
+  "browser": {
+    "command": "npx",
+    "args": ["@browsermcp/mcp@latest"]
+  },
+  "filesystem": {
+    "command": "npx",
+    "args": ["@modelcontextprotocol/server-filesystem", "/path/to/allowed"]
+  }
+}
+```
+
+**Managing MCP Servers:**
+- **Via Plugin:** Settings → MCP Servers section (recommended for Obsidian users)
+- **Via API:** `GET/POST/DELETE /api/mcp/:name`
+- **Via File:** Edit `.mcp.json` directly
+
+**Agent MCP Configuration:**
+Agents can reference global servers by name, define inline configs, or mix both:
+
+```markdown
+---
+agent:
+  name: web-browser
+  description: Agent with browser access
+  mcpServers: [browser]  # Reference by name from .mcp.json
+---
+```
+
+Or with inline config:
+```markdown
+---
+agent:
+  name: web-browser
+  mcpServers:
+    browser:
+      command: npx
+      args: ["@browsermcp/mcp@latest"]
+---
+```
+
+**BrowserMCP Setup:**
+1. Install the BrowserMCP browser extension from [browsermcp.io](https://browsermcp.io)
+2. Add the browser server via plugin settings or `.mcp.json`
+3. Reference it in your agent: `mcpServers: [browser]`
+
+**MCP Server Configuration Formats:**
+
+| Transport | Config | Description |
+|-----------|--------|-------------|
+| Stdio (recommended) | `{command: "npx", args: [...]}` | Auto-starts via npx |
+| SSE | `{type: "sse", url: "..."}` | Connect to running server |
+| HTTP | `{type: "http", url: "..."}` | HTTP streaming |
+
+**BrowserMCP Tools:**
+- `mcp__browser__navigate` - Go to a URL
+- `mcp__browser__click` - Click an element
+- `mcp__browser__type_text` - Type into a field
+- `mcp__browser__take_screenshot` - Capture page screenshot
+- `mcp__browser__wait` - Wait for duration
+- `mcp__browser__press_key` - Press keyboard key
+
+**Advantages:**
+- Uses your real browser with existing logins
+- Avoids bot detection (real fingerprint)
+- Runs locally for privacy
 
 ## Environment Variables
 

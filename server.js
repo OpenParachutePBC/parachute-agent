@@ -466,6 +466,67 @@ app.get('/api/permissions/stream', (req, res) => {
   });
 });
 
+// ============================================================================
+// MCP SERVER MANAGEMENT
+// ============================================================================
+
+/**
+ * GET /api/mcp
+ * List all MCP server configurations from .mcp.json
+ */
+app.get('/api/mcp', async (req, res) => {
+  try {
+    const servers = await orchestrator.listMcpServers();
+    res.json(servers);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/mcp/:name
+ * Add or update an MCP server configuration
+ * Body: { command: "npx", args: [...] } or { type: "sse", url: "..." }
+ */
+app.post('/api/mcp/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const config = req.body;
+
+    if (!config || typeof config !== 'object') {
+      return res.status(400).json({ error: 'Server configuration is required' });
+    }
+
+    // Validate config has required fields
+    const hasStdio = config.command;
+    const hasNetwork = config.type && config.url;
+    if (!hasStdio && !hasNetwork) {
+      return res.status(400).json({
+        error: 'Invalid config: need either {command, args} for stdio or {type, url} for network'
+      });
+    }
+
+    await orchestrator.addMcpServer(name, config);
+    res.json({ added: true, name, config });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/mcp/:name
+ * Remove an MCP server configuration
+ */
+app.delete('/api/mcp/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    await orchestrator.removeMcpServer(name);
+    res.json({ removed: true, name });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * POST /api/queue/process
  * Trigger queue processing
@@ -481,6 +542,70 @@ app.post('/api/queue/process', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+/**
+ * GET /api/queue/:id/stream
+ * Stream live updates for a running queue item via SSE
+ * Events: init, text, tool_use, done, error, close
+ */
+app.get('/api/queue/:id/stream', async (req, res) => {
+  const { id } = req.params;
+
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  // Check if queue item exists and is running
+  const state = orchestrator.getQueueState();
+  const runningItem = state.running.find(item => item.id === id);
+
+  if (!runningItem) {
+    // Check if it's in completed
+    const completedItem = state.completed.find(item => item.id === id);
+    if (completedItem) {
+      res.write(`data: ${JSON.stringify({ type: 'already_completed', result: completedItem.result })}\n\n`);
+      res.end();
+      return;
+    }
+    res.write(`data: ${JSON.stringify({ type: 'error', error: 'Queue item not found or not running' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // Get or create the event stream for this queue item
+  const stream = orchestrator.getQueueStream(id);
+
+  // Send initial info
+  res.write(`data: ${JSON.stringify({
+    type: 'connected',
+    queueItem: {
+      id: runningItem.id,
+      agentPath: runningItem.agentPath,
+      documentPath: runningItem.context?.documentPath,
+      startedAt: runningItem.startedAt
+    }
+  })}\n\n`);
+
+  // Listen for events
+  const eventHandler = (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+    // Close connection on done, error, or close events
+    if (event.type === 'done' || event.type === 'error' || event.type === 'close') {
+      res.end();
+    }
+  };
+
+  stream.on('event', eventHandler);
+
+  // Cleanup on client disconnect
+  req.on('close', () => {
+    stream.off('event', eventHandler);
+  });
 });
 
 /**
