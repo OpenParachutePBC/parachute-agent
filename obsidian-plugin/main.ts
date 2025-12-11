@@ -693,20 +693,49 @@ class AgentPilotView extends ItemView {
           });
         }
 
-        // Render tool calls if present
+        // Render tool calls if present (collapsible)
         if (msg.toolCalls && msg.toolCalls.length > 0) {
-          const toolsEl = msgEl.createDiv({ cls: 'pilot-tool-calls' });
+          const toolsContainer = msgEl.createDiv({ cls: 'pilot-tool-calls-container' });
+
+          // Header with count (clickable to expand/collapse)
+          const toolsHeader = toolsContainer.createDiv({ cls: 'pilot-tool-calls-header' });
+          toolsHeader.createEl('span', { cls: 'pilot-tool-calls-icon', text: '▶' });
+          toolsHeader.createEl('span', {
+            cls: 'pilot-tool-calls-label',
+            text: `${msg.toolCalls.length} tool call${msg.toolCalls.length > 1 ? 's' : ''}`
+          });
+
+          // Tool calls list (initially collapsed)
+          const toolsEl = toolsContainer.createDiv({ cls: 'pilot-tool-calls pilot-tool-calls-collapsed' });
+
+          toolsHeader.addEventListener('click', () => {
+            const icon = toolsHeader.querySelector('.pilot-tool-calls-icon');
+            if (toolsEl.hasClass('pilot-tool-calls-collapsed')) {
+              toolsEl.removeClass('pilot-tool-calls-collapsed');
+              if (icon) icon.textContent = '▼';
+            } else {
+              toolsEl.addClass('pilot-tool-calls-collapsed');
+              if (icon) icon.textContent = '▶';
+            }
+          });
+
           for (const tool of msg.toolCalls) {
             const toolEl = toolsEl.createDiv({ cls: 'pilot-tool-call' });
             const toolHeader = toolEl.createDiv({ cls: 'pilot-tool-header' });
             toolHeader.createEl('span', { cls: 'pilot-tool-icon', text: '⚡' });
             toolHeader.createEl('span', { cls: 'pilot-tool-name', text: tool.name });
 
-            // Show input summary if present
+            // Show input summary if present (with full path in title)
             if (tool.input) {
-              const inputSummary = this.summarizeToolInput(tool.name, tool.input);
-              if (inputSummary) {
-                toolHeader.createEl('span', { cls: 'pilot-tool-input', text: inputSummary });
+              const fullPath = this.summarizeToolInput(tool.name, tool.input);
+              if (fullPath) {
+                // Show just the filename, full path on hover
+                const shortName = fullPath.split('/').pop() || fullPath;
+                toolHeader.createEl('span', {
+                  cls: 'pilot-tool-input',
+                  text: shortName,
+                  attr: { title: fullPath }
+                });
               }
             }
           }
@@ -907,59 +936,155 @@ class AgentPilotView extends ItemView {
     this.isLoading = true;
     this.render();
 
+    // Create a placeholder message for streaming content
+    const assistantMessage: ChatMessage = {
+      role: 'assistant',
+      content: '',
+      timestamp: new Date(),
+      toolCalls: []
+    };
+    session.messages.push(assistantMessage);
+
+    // Track streaming state
+    let currentToolCalls: ToolCall[] = [];
+    let finalData: any = null;
+
     try {
-      const response = await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat`, {
+      const response = await fetch(`${this.plugin.settings.orchestratorUrl}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: content,
           agentPath: session.agentPath,
-          sessionId: session.id  // Send unique session ID for isolated conversations
+          sessionId: session.id
         })
       });
 
-      const data = await response.json();
-
-      // Build debug info with duration
-      const debug: DebugInfo | undefined = data.debug ? {
-        ...data.debug,
-        durationMs: data.durationMs
-      } : undefined;
-
-      session.messages.push({
-        role: 'assistant',
-        content: data.response || data.error || 'No response',
-        timestamp: new Date(),
-        agentPath: data.agentPath,
-        toolCalls: data.toolCalls || undefined,
-        permissionDenials: data.permissionDenials || undefined,
-        debug
-      });
-
-      if (data.spawned?.length > 0) {
-        session.messages.push({
-          role: 'system',
-          content: `Spawned ${data.spawned.length} sub-agent(s)`,
-          timestamp: new Date()
-        });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
 
-      // Show notification if there were permission denials
-      if (data.permissionDenials?.length > 0) {
-        new Notice(`${data.permissionDenials.length} write operation(s) were blocked by permissions`);
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('No response body');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE events
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const event = JSON.parse(line.slice(6));
+              this.handleStreamEvent(event, assistantMessage, currentToolCalls, session);
+              if (event.type === 'done' || event.type === 'error') {
+                finalData = event;
+              }
+            } catch (e) {
+              console.error('[Agent Pilot] Failed to parse SSE event:', e);
+            }
+          }
+        }
+      }
+
+      // Handle final data
+      if (finalData) {
+        if (finalData.type === 'done') {
+          // Update with final data
+          assistantMessage.toolCalls = finalData.toolCalls || currentToolCalls;
+          assistantMessage.permissionDenials = finalData.permissionDenials;
+          assistantMessage.debug = {
+            systemPromptLength: 0,
+            messageLength: content.length,
+            agentPath: session.agentPath || 'vault-agent',
+            model: 'default',
+            toolsAvailable: [],
+            resumedSession: finalData.sessionResume?.method !== 'new',
+            durationMs: finalData.durationMs
+          };
+
+          if (finalData.spawned?.length > 0) {
+            session.messages.push({
+              role: 'system',
+              content: `Spawned ${finalData.spawned.length} sub-agent(s)`,
+              timestamp: new Date()
+            });
+          }
+
+          if (finalData.permissionDenials?.length > 0) {
+            new Notice(`${finalData.permissionDenials.length} write operation(s) were blocked by permissions`);
+          }
+        } else if (finalData.type === 'error') {
+          assistantMessage.content = `Error: ${finalData.error}`;
+        }
       }
 
     } catch (e) {
-      session.messages.push({
-        role: 'system',
-        content: `Error: ${e.message}`,
-        timestamp: new Date()
-      });
+      // Update the assistant message with error
+      assistantMessage.content = `Error: ${e.message}`;
     } finally {
       this.isLoading = false;
     }
 
     this.render();
+  }
+
+  /**
+   * Handle individual streaming events
+   */
+  private handleStreamEvent(
+    event: any,
+    message: ChatMessage,
+    toolCalls: ToolCall[],
+    session: ChatSession
+  ): void {
+    switch (event.type) {
+      case 'session':
+        // Session info received
+        console.log(`[Agent Pilot] Session: ${event.sessionId}, resume: ${event.resumeInfo?.method}`);
+        break;
+
+      case 'init':
+        // SDK initialized
+        console.log(`[Agent Pilot] Tools available: ${event.tools?.join(', ')}`);
+        break;
+
+      case 'text':
+        // Text content (incremental or full)
+        message.content = event.content;
+        this.render();
+        break;
+
+      case 'tool_use':
+        // Tool being used
+        const tool: ToolCall = {
+          name: event.tool.name,
+          input: event.tool.input
+        };
+        toolCalls.push(tool);
+        message.toolCalls = [...toolCalls];
+        this.render();
+        break;
+
+      case 'error':
+        message.content = `Error: ${event.error}`;
+        this.render();
+        break;
+
+      case 'done':
+        // Final message - will be processed after stream ends
+        break;
+    }
   }
 
   private async clearSession(): Promise<void> {
@@ -1820,11 +1945,44 @@ class AgentPilotView extends ItemView {
       }
 
       /* Tool calls display */
-      .pilot-tool-calls {
+      .pilot-tool-calls-container {
         margin-bottom: 8px;
+      }
+
+      .pilot-tool-calls-header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        cursor: pointer;
+        color: var(--text-muted);
+        font-size: 12px;
+        border-radius: 4px;
+      }
+
+      .pilot-tool-calls-header:hover {
+        background: var(--background-modifier-hover);
+      }
+
+      .pilot-tool-calls-icon {
+        font-size: 10px;
+        width: 12px;
+      }
+
+      .pilot-tool-calls-label {
+        font-weight: 500;
+      }
+
+      .pilot-tool-calls {
         display: flex;
         flex-direction: column;
         gap: 4px;
+        padding-left: 8px;
+        margin-top: 4px;
+      }
+
+      .pilot-tool-calls-collapsed {
+        display: none;
       }
 
       .pilot-tool-call {

@@ -120,6 +120,52 @@ app.post('/api/chat', async (req, res) => {
 });
 
 /**
+ * POST /api/chat/stream
+ * Streaming chat with agent via SSE
+ * Events: session, init, text, tool_use, done, error
+ */
+app.post('/api/chat/stream', async (req, res) => {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.flushHeaders();
+
+  const { message, agentPath, sessionId } = req.body;
+
+  if (!message) {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: 'message is required' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  console.log(`[API] Streaming chat request: agent=${agentPath}, sessionId=${sessionId}`);
+
+  const context = {};
+  if (sessionId) {
+    context.sessionId = sessionId;
+  }
+
+  try {
+    const stream = orchestrator.runImmediateStreaming(
+      agentPath || null,
+      message,
+      context
+    );
+
+    for await (const event of stream) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+  } catch (error) {
+    console.error('Stream error:', error);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+  }
+
+  res.end();
+});
+
+/**
  * GET /api/chat/sessions
  * List all chat sessions
  */

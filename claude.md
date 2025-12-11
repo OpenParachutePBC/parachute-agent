@@ -52,6 +52,7 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 |----------|--------|-------------|
 | `/api/agents` | GET | List agents |
 | `/api/chat` | POST | Send message (body: `{message, agentPath?, sessionId?}`) |
+| `/api/chat/stream` | POST | Streaming chat via SSE (same body as `/api/chat`) |
 | `/api/chat/sessions` | GET | List all sessions |
 | `/api/chat/session/:id` | GET | Get session by ID with messages |
 | `/api/chat/session/:id/archive` | POST | Archive a session |
@@ -127,6 +128,15 @@ Every chat response includes `sessionResume` with:
 - Agents define `write_permissions` as glob patterns in frontmatter
 - Writes outside allowed paths trigger permission requests via SSE
 - Plugin shows inline permission dialogs for user approval
+
+### Streaming Chat
+The `/api/chat/stream` endpoint returns SSE events for real-time UI updates:
+- `session`: Session ID and resume info at start
+- `init`: SDK initialized with available tools
+- `text`: Text content (full content, updated incrementally)
+- `tool_use`: Tool being executed with name and input
+- `done`: Final result with toolCalls, durationMs, spawned, sessionResume
+- `error`: Error message if something went wrong
 
 ### Error Handling
 - Agent execution errors returned in response
