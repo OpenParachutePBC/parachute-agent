@@ -36,6 +36,9 @@ Parachute Agent is the backend for Parachute - an AI agent system that uses mark
 | `lib/agent-loader.js` | Load agent definitions from markdown |
 | `lib/vault-utils.js` | Shared file utilities |
 | `lib/mcp-loader.js` | MCP server configuration management |
+| `lib/path-validator.js` | Path traversal prevention utilities |
+| `lib/logger.js` | Structured logging with in-memory buffer |
+| `lib/errors.js` | Custom error classes with HTTP status codes |
 | `obsidian-plugin/main.ts` | Optional Obsidian plugin |
 
 ## Commands
@@ -72,6 +75,9 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 | `/api/mcp` | GET | List all MCP server configurations |
 | `/api/mcp/:name` | POST | Add or update an MCP server |
 | `/api/mcp/:name` | DELETE | Remove an MCP server |
+| `/api/analytics` | GET | Get session and agent analytics |
+| `/api/logs` | GET | Query recent logs (params: `level`, `component`, `since`, `limit`) |
+| `/api/logs/stats` | GET | Get log statistics |
 
 ## Agent Definition Format
 
@@ -280,6 +286,7 @@ agent:
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins, or `*` for all |
 | `API_KEY` | (none) | Optional API key for authentication |
 | `MAX_MESSAGE_LENGTH` | `102400` | Max chat message length in bytes (100KB) |
+| `LOG_LEVEL` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 
 ### Security Configuration
 

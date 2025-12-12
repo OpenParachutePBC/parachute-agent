@@ -15,6 +15,8 @@ import fs from 'fs/promises';
 
 import { Orchestrator } from './lib/orchestrator.js';
 import { listVaultFiles, readDocument, searchVault } from './lib/vault-utils.js';
+import { validateRelativePath, sanitizeFilename } from './lib/path-validator.js';
+import { queryLogs, getLogStats, serverLogger as log } from './lib/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -505,6 +507,104 @@ app.get('/api/stats', async (req, res) => {
 });
 
 /**
+ * GET /api/analytics
+ * Get agent and session analytics
+ */
+app.get('/api/analytics', async (req, res) => {
+  try {
+    const sessionStats = orchestrator.getSessionStats();
+    const queueState = orchestrator.getQueueState();
+    const agents = await orchestrator.getAgents();
+
+    // Group sessions by agent
+    const sessions = orchestrator.listChatSessions();
+    const sessionsByAgent = {};
+    const sessionsByDay = {};
+
+    for (const session of sessions) {
+      // By agent
+      const agentKey = session.agentPath || 'vault-agent';
+      sessionsByAgent[agentKey] = (sessionsByAgent[agentKey] || 0) + 1;
+
+      // By day (from createdAt)
+      if (session.createdAt) {
+        const day = new Date(session.createdAt).toISOString().split('T')[0];
+        sessionsByDay[day] = (sessionsByDay[day] || 0) + 1;
+      }
+    }
+
+    // Calculate averages
+    const totalMessages = sessions.reduce((sum, s) => sum + (s.messageCount || 0), 0);
+    const avgMessagesPerSession = sessions.length > 0 ? Math.round(totalMessages / sessions.length) : 0;
+
+    res.json({
+      overview: {
+        totalSessions: sessions.length,
+        activeSessions: sessionStats.activeCount || 0,
+        totalAgents: agents.length,
+        totalMessages,
+        avgMessagesPerSession
+      },
+      queue: {
+        pending: queueState.pending?.length || 0,
+        running: queueState.running?.length || 0,
+        completed: queueState.completed?.length || 0
+      },
+      sessionsByAgent,
+      sessionsByDay: Object.entries(sessionsByDay)
+        .sort(([a], [b]) => b.localeCompare(a))
+        .slice(0, 30)
+        .reduce((obj, [k, v]) => ({ ...obj, [k]: v }), {}),
+      agents: agents.map(a => ({
+        name: a.name,
+        path: a.path,
+        type: a.type || 'chatbot',
+        sessionCount: sessionsByAgent[a.path] || 0
+      })),
+      system: {
+        uptime: process.uptime(),
+        memoryMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/logs
+ * Query recent logs
+ * Query params: level, component, since, limit
+ */
+app.get('/api/logs', async (req, res) => {
+  try {
+    const { level, component, since, limit } = req.query;
+    const logs = queryLogs({
+      level,
+      component,
+      since,
+      limit: limit ? parseInt(limit, 10) : 100
+    });
+    res.json(logs);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/logs/stats
+ * Get log statistics
+ */
+app.get('/api/logs/stats', async (req, res) => {
+  try {
+    const stats = getLogStats();
+    res.json(stats);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * GET /api/permissions
  * Get pending permission requests
  */
@@ -599,54 +699,9 @@ app.get('/api/permissions/stream', (req, res) => {
 // CAPTURES (Document Upload)
 // ============================================================================
 
-/**
- * Sanitize filename to prevent path traversal attacks
- * Only allows alphanumeric, dash, underscore, dot
- */
-function sanitizeFilename(filename) {
-  if (!filename || typeof filename !== 'string') return null;
-  // Reject path traversal attempts
-  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
-    return null;
-  }
-  // Only allow safe characters
-  if (!/^[a-zA-Z0-9_\-\.]+$/.test(filename)) {
-    return null;
-  }
-  return filename;
-}
-
-/**
- * Validate a vault-relative path to prevent path traversal attacks
- * Returns the normalized path if valid, null if invalid
- */
+// Helper to validate vault paths using the shared utility
 function validateVaultPath(relativePath) {
-  if (!relativePath || typeof relativePath !== 'string') return null;
-
-  // Reject empty paths
-  if (relativePath.trim() === '') return null;
-
-  // Reject absolute paths
-  if (path.isAbsolute(relativePath)) return null;
-
-  // Normalize and check for traversal
-  const normalized = path.normalize(relativePath);
-
-  // After normalization, check if it tries to escape
-  if (normalized.startsWith('..') || normalized.includes('/../')) return null;
-
-  // Reject null bytes
-  if (relativePath.includes('\0')) return null;
-
-  // Resolve the full path and ensure it's within the vault
-  const fullPath = path.resolve(CONFIG.vaultPath, normalized);
-  const vaultResolved = path.resolve(CONFIG.vaultPath);
-
-  if (!fullPath.startsWith(vaultResolved + path.sep) && fullPath !== vaultResolved) {
-    return null;
-  }
-
-  return normalized;
+  return validateRelativePath(relativePath, CONFIG.vaultPath);
 }
 
 /**
