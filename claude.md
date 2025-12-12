@@ -275,4 +275,23 @@ agent:
 |----------|---------|-------------|
 | `VAULT_PATH` | `./sample-vault` | Path to markdown folder |
 | `PORT` | `3333` | Server port |
+| `HOST` | `0.0.0.0` | Server bind address |
 | `ANTHROPIC_API_KEY` | (required) | Claude API key |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed origins, or `*` for all |
+| `API_KEY` | (none) | Optional API key for authentication |
+| `MAX_MESSAGE_LENGTH` | `102400` | Max chat message length in bytes (100KB) |
+
+### Security Configuration
+
+For production deployments:
+
+```bash
+# Restrict CORS to specific origins
+CORS_ORIGINS=http://localhost:3000,https://myapp.com
+
+# Enable API key authentication
+API_KEY=your-secret-key-here
+
+# Clients must include header: X-API-Key: your-secret-key-here
+# Or: Authorization: Bearer your-secret-key-here
+```

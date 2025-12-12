@@ -23,21 +23,65 @@ const CONFIG = {
   port: process.env.PORT || 3333,
   host: process.env.HOST || '0.0.0.0',  // Bind to all interfaces for Tailscale access
   vaultPath: process.env.VAULT_PATH || path.join(__dirname, 'sample-vault'),
+  // CORS: comma-separated origins or '*' for all (default for dev)
+  corsOrigins: process.env.CORS_ORIGINS || '*',
+  // Optional API key for authentication
+  apiKey: process.env.API_KEY || null,
+  // Max message length (default 100KB)
+  maxMessageLength: parseInt(process.env.MAX_MESSAGE_LENGTH || '102400', 10),
 };
 
 const app = express();
 app.use(express.json());
 
-// CORS - allow requests from Obsidian plugin
+// Parse allowed CORS origins
+const allowedOrigins = CONFIG.corsOrigins === '*'
+  ? null  // null means allow all
+  : CONFIG.corsOrigins.split(',').map(o => o.trim()).filter(Boolean);
+
+// CORS middleware with configurable origins
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+
+  if (allowedOrigins === null) {
+    // Allow all origins
+    res.header('Access-Control-Allow-Origin', '*');
+  } else if (origin && allowedOrigins.includes(origin)) {
+    // Allow specific origin
+    res.header('Access-Control-Allow-Origin', origin);
+    res.header('Vary', 'Origin');
+  } else if (origin) {
+    // Origin not allowed - still respond but without CORS headers
+    // Browser will block the response
+  }
+
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-API-Key');
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
   next();
 });
+
+// Optional API key authentication middleware
+const apiKeyAuth = (req, res, next) => {
+  if (!CONFIG.apiKey) {
+    // No API key configured, skip auth
+    return next();
+  }
+
+  const providedKey = req.headers['x-api-key'] || req.headers['authorization']?.replace('Bearer ', '');
+
+  if (providedKey !== CONFIG.apiKey) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid or missing API key' });
+  }
+
+  next();
+};
+
+// Apply API key auth to all /api routes
+app.use('/api', apiKeyAuth);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -72,9 +116,71 @@ async function findInVault(queryStr) {
 /**
  * GET /api/health
  * Health check endpoint for monitoring
+ * Returns detailed status if ?detailed=true is passed
  */
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: Date.now() });
+app.get('/api/health', async (req, res) => {
+  const basic = {
+    status: 'ok',
+    timestamp: Date.now()
+  };
+
+  // Return basic response for simple health checks
+  if (req.query.detailed !== 'true') {
+    return res.json(basic);
+  }
+
+  // Detailed health check
+  try {
+    const sessionStats = orchestrator.getSessionStats();
+    const queueState = orchestrator.getQueueState();
+    const agents = await orchestrator.getAgents();
+
+    // Check vault accessibility
+    let vaultStatus = 'ok';
+    try {
+      await fs.access(CONFIG.vaultPath);
+    } catch {
+      vaultStatus = 'error';
+    }
+
+    res.json({
+      ...basic,
+      version: process.env.npm_package_version || 'unknown',
+      vault: {
+        path: CONFIG.vaultPath,
+        status: vaultStatus
+      },
+      sessions: {
+        indexed: sessionStats.indexedCount || 0,
+        loaded: sessionStats.loadedCount || 0,
+        active: sessionStats.activeCount || 0
+      },
+      queue: {
+        pending: queueState.pending?.length || 0,
+        running: queueState.running?.length || 0,
+        completed: queueState.completed?.length || 0
+      },
+      agents: {
+        count: agents.length
+      },
+      system: {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        nodeVersion: process.version
+      },
+      config: {
+        corsOrigins: CONFIG.corsOrigins === '*' ? 'all' : 'restricted',
+        authEnabled: !!CONFIG.apiKey,
+        maxMessageLength: CONFIG.maxMessageLength
+      }
+    });
+  } catch (error) {
+    res.json({
+      ...basic,
+      status: 'degraded',
+      error: error.message
+    });
+  }
 });
 
 /**
@@ -90,6 +196,13 @@ app.post('/api/chat', async (req, res) => {
 
     if (!message) {
       return res.status(400).json({ error: 'message is required' });
+    }
+
+    // Validate message length
+    if (message.length > CONFIG.maxMessageLength) {
+      return res.status(400).json({
+        error: `Message too long: ${message.length} chars exceeds limit of ${CONFIG.maxMessageLength}`
+      });
     }
 
     // Build context - use sessionId as context key for unique sessions
@@ -148,6 +261,13 @@ app.post('/api/chat/stream', async (req, res) => {
 
   if (!message) {
     res.write(`data: ${JSON.stringify({ type: 'error', error: 'message is required' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // Validate message length
+  if (message.length > CONFIG.maxMessageLength) {
+    res.write(`data: ${JSON.stringify({ type: 'error', error: `Message too long: ${message.length} chars exceeds limit of ${CONFIG.maxMessageLength}` })}\n\n`);
     res.end();
     return;
   }
@@ -497,6 +617,39 @@ function sanitizeFilename(filename) {
 }
 
 /**
+ * Validate a vault-relative path to prevent path traversal attacks
+ * Returns the normalized path if valid, null if invalid
+ */
+function validateVaultPath(relativePath) {
+  if (!relativePath || typeof relativePath !== 'string') return null;
+
+  // Reject empty paths
+  if (relativePath.trim() === '') return null;
+
+  // Reject absolute paths
+  if (path.isAbsolute(relativePath)) return null;
+
+  // Normalize and check for traversal
+  const normalized = path.normalize(relativePath);
+
+  // After normalization, check if it tries to escape
+  if (normalized.startsWith('..') || normalized.includes('/../')) return null;
+
+  // Reject null bytes
+  if (relativePath.includes('\0')) return null;
+
+  // Resolve the full path and ensure it's within the vault
+  const fullPath = path.resolve(CONFIG.vaultPath, normalized);
+  const vaultResolved = path.resolve(CONFIG.vaultPath);
+
+  if (!fullPath.startsWith(vaultResolved + path.sep) && fullPath !== vaultResolved) {
+    return null;
+  }
+
+  return normalized;
+}
+
+/**
  * POST /api/captures
  * Upload a document to the captures folder
  * Body: { filename, content, title?, context?, timestamp? }
@@ -818,7 +971,10 @@ app.get('/api/documents/stats', async (req, res) => {
  */
 app.get('/api/documents/*/agents', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const agents = await orchestrator.getDocumentAgents(docPath);
     res.json(agents);
   } catch (error) {
@@ -833,7 +989,10 @@ app.get('/api/documents/*/agents', async (req, res) => {
  */
 app.put('/api/documents/*/agents', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const { agents } = req.body;
 
     if (!Array.isArray(agents)) {
@@ -854,7 +1013,10 @@ app.put('/api/documents/*/agents', async (req, res) => {
  */
 app.get('/api/documents/*/agents/pending', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const agents = await orchestrator.getPendingAgents(docPath);
     res.json(agents);
   } catch (error) {
@@ -869,7 +1031,10 @@ app.get('/api/documents/*/agents/pending', async (req, res) => {
  */
 app.post('/api/documents/*/run-agents', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const { agents } = req.body;
 
     let results;
@@ -896,7 +1061,10 @@ app.post('/api/documents/*/run-agents', async (req, res) => {
  */
 app.post('/api/documents/*/reset-agents', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const { agents } = req.body;
 
     const reset = await orchestrator.resetDocumentAgents(docPath, agents);
@@ -916,7 +1084,10 @@ app.post('/api/documents/*/reset-agents', async (req, res) => {
  */
 app.post('/api/documents/trigger/*', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const { agents } = req.body;
 
     let triggered;
@@ -938,7 +1109,10 @@ app.post('/api/documents/trigger/*', async (req, res) => {
  */
 app.post('/api/documents/process/*', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const result = await orchestrator.processDocument(docPath);
     res.json(result);
   } catch (error) {
@@ -952,7 +1126,10 @@ app.post('/api/documents/process/*', async (req, res) => {
  */
 app.get('/api/documents/*', async (req, res) => {
   try {
-    const docPath = req.params[0];
+    const docPath = validateVaultPath(req.params[0]);
+    if (!docPath) {
+      return res.status(400).json({ error: 'Invalid document path' });
+    }
     const doc = await getDocument(docPath);
     if (!doc) {
       return res.status(404).json({ error: 'Document not found' });
