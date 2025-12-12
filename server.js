@@ -11,6 +11,7 @@ import express from 'express';
 import { marked } from 'marked';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs/promises';
 
 import { Orchestrator } from './lib/orchestrator.js';
 import { listVaultFiles, readDocument, searchVault } from './lib/vault-utils.js';
@@ -67,6 +68,14 @@ async function findInVault(queryStr) {
 // ============================================================================
 // API ROUTES
 // ============================================================================
+
+/**
+ * GET /api/health
+ * Health check endpoint for monitoring
+ */
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: Date.now() });
+});
 
 /**
  * POST /api/chat
@@ -464,6 +473,141 @@ app.get('/api/permissions/stream', (req, res) => {
     orchestrator.off('permissionGranted', onPermissionGranted);
     orchestrator.off('permissionDenied', onPermissionDenied);
   });
+});
+
+// ============================================================================
+// CAPTURES (Document Upload)
+// ============================================================================
+
+/**
+ * Sanitize filename to prevent path traversal attacks
+ * Only allows alphanumeric, dash, underscore, dot
+ */
+function sanitizeFilename(filename) {
+  if (!filename || typeof filename !== 'string') return null;
+  // Reject path traversal attempts
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return null;
+  }
+  // Only allow safe characters
+  if (!/^[a-zA-Z0-9_\-\.]+$/.test(filename)) {
+    return null;
+  }
+  return filename;
+}
+
+/**
+ * POST /api/captures
+ * Upload a document to the captures folder
+ * Body: { filename, content, title?, context?, timestamp? }
+ */
+app.post('/api/captures', async (req, res) => {
+  try {
+    const { filename, content, title, context, timestamp } = req.body;
+
+    // Validate required fields
+    if (!filename) {
+      return res.status(400).json({ success: false, error: 'Missing required field: filename' });
+    }
+    if (!content) {
+      return res.status(400).json({ success: false, error: 'Missing required field: content' });
+    }
+
+    // Sanitize filename
+    const safeFilename = sanitizeFilename(filename);
+    if (!safeFilename) {
+      return res.status(400).json({ success: false, error: 'Invalid filename: must contain only alphanumeric, dash, underscore, and dot characters' });
+    }
+
+    // Size limit (1MB)
+    if (content.length > 1024 * 1024) {
+      return res.status(400).json({ success: false, error: 'Content too large: max 1MB' });
+    }
+
+    // Ensure captures directory exists
+    const capturesDir = path.join(CONFIG.vaultPath, 'captures');
+    await fs.mkdir(capturesDir, { recursive: true });
+
+    // Write the file
+    const filePath = path.join(capturesDir, safeFilename);
+    await fs.writeFile(filePath, content, 'utf-8');
+
+    const relativePath = `captures/${safeFilename}`;
+    console.log(`[API] Uploaded capture: ${relativePath}`);
+
+    res.status(201).json({
+      success: true,
+      path: relativePath,
+      message: 'Document uploaded successfully'
+    });
+
+  } catch (error) {
+    console.error('Capture upload error:', error);
+    res.status(500).json({ success: false, error: `Failed to write file: ${error.message}` });
+  }
+});
+
+/**
+ * HEAD /api/captures/:filename
+ * Check if a capture file exists
+ */
+app.head('/api/captures/:filename', async (req, res) => {
+  try {
+    const safeFilename = sanitizeFilename(req.params.filename);
+    if (!safeFilename) {
+      return res.status(400).end();
+    }
+
+    const filePath = path.join(CONFIG.vaultPath, 'captures', safeFilename);
+    await fs.access(filePath);
+    res.status(200).end();
+  } catch (error) {
+    res.status(404).end();
+  }
+});
+
+/**
+ * GET /api/captures/:filename
+ * Get a capture file's content
+ */
+app.get('/api/captures/:filename', async (req, res) => {
+  try {
+    const safeFilename = sanitizeFilename(req.params.filename);
+    if (!safeFilename) {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+
+    const filePath = path.join(CONFIG.vaultPath, 'captures', safeFilename);
+    const content = await fs.readFile(filePath, 'utf-8');
+    res.json({
+      path: `captures/${safeFilename}`,
+      content
+    });
+  } catch (error) {
+    res.status(404).json({ error: 'File not found' });
+  }
+});
+
+/**
+ * GET /api/captures
+ * List all captures
+ */
+app.get('/api/captures', async (req, res) => {
+  try {
+    const capturesDir = path.join(CONFIG.vaultPath, 'captures');
+    try {
+      const files = await fs.readdir(capturesDir);
+      const captures = files
+        .filter(f => f.endsWith('.md'))
+        .map(f => ({ filename: f, path: `captures/${f}` }));
+      res.json(captures);
+    } catch (e) {
+      // Directory doesn't exist yet
+      res.json([]);
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ============================================================================
