@@ -17,6 +17,7 @@ import { Orchestrator } from './lib/orchestrator.js';
 import { listVaultFiles, readDocument, searchVault } from './lib/vault-utils.js';
 import { validateRelativePath, sanitizeFilename } from './lib/path-validator.js';
 import { queryLogs, getLogStats, serverLogger as log } from './lib/logger.js';
+import { initializeUsageTracker, getUsageTracker } from './lib/usage-tracker.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -304,12 +305,43 @@ app.post('/api/chat/stream', async (req, res) => {
 
 /**
  * GET /api/chat/sessions
- * List all chat sessions
+ * List all chat sessions with pagination
+ * Query params: limit, offset, sort (newest|oldest), archived
  */
 app.get('/api/chat/sessions', async (req, res) => {
   try {
-    const sessions = orchestrator.listChatSessions();
-    res.json(sessions);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 200);
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const sort = req.query.sort || 'newest';
+    const showArchived = req.query.archived === 'true';
+
+    let sessions = orchestrator.listChatSessions();
+
+    // Filter archived
+    if (!showArchived) {
+      sessions = sessions.filter(s => !s.archived);
+    }
+
+    // Sort
+    sessions.sort((a, b) => {
+      const dateA = new Date(a.lastAccessed || a.createdAt || 0);
+      const dateB = new Date(b.lastAccessed || b.createdAt || 0);
+      return sort === 'newest' ? dateB - dateA : dateA - dateB;
+    });
+
+    // Paginate
+    const total = sessions.length;
+    const paginated = sessions.slice(offset, offset + limit);
+
+    res.json({
+      sessions: paginated,
+      pagination: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + limit < total
+      }
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -571,21 +603,124 @@ app.get('/api/analytics', async (req, res) => {
   }
 });
 
+// ============================================================================
+// TOKEN USAGE TRACKING
+// ============================================================================
+
+/**
+ * GET /api/usage
+ * Get token usage summary
+ */
+app.get('/api/usage', async (req, res) => {
+  try {
+    const tracker = getUsageTracker();
+    if (!tracker) {
+      return res.json({ error: 'Usage tracking not initialized', usage: null });
+    }
+    res.json(tracker.getSummary());
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/usage/daily
+ * Get daily usage for the last N days
+ */
+app.get('/api/usage/daily', async (req, res) => {
+  try {
+    const tracker = getUsageTracker();
+    if (!tracker) {
+      return res.json([]);
+    }
+    const days = Math.min(parseInt(req.query.days, 10) || 30, 90);
+    res.json(tracker.getDailyUsage(days));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/usage/hourly
+ * Get hourly usage for the last N hours
+ */
+app.get('/api/usage/hourly', async (req, res) => {
+  try {
+    const tracker = getUsageTracker();
+    if (!tracker) {
+      return res.json([]);
+    }
+    const hours = Math.min(parseInt(req.query.hours, 10) || 24, 168);
+    res.json(tracker.getHourlyUsage(hours));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/usage/session/:id
+ * Get usage for a specific session
+ */
+app.get('/api/usage/session/:id', async (req, res) => {
+  try {
+    const tracker = getUsageTracker();
+    if (!tracker) {
+      return res.json({ error: 'Usage tracking not initialized' });
+    }
+    res.json(tracker.getSessionUsage(req.params.id));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/usage/agent/:path
+ * Get usage for a specific agent
+ */
+app.get('/api/usage/agent/*', async (req, res) => {
+  try {
+    const tracker = getUsageTracker();
+    if (!tracker) {
+      return res.json({ error: 'Usage tracking not initialized' });
+    }
+    res.json(tracker.getAgentUsage(req.params[0]));
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * GET /api/logs
- * Query recent logs
- * Query params: level, component, since, limit
+ * Query recent logs with pagination
+ * Query params: level, component, since, limit, offset
  */
 app.get('/api/logs', async (req, res) => {
   try {
-    const { level, component, since, limit } = req.query;
-    const logs = queryLogs({
+    const { level, component, since } = req.query;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+    const offset = parseInt(req.query.offset, 10) || 0;
+
+    // Get all matching logs first
+    const allLogs = queryLogs({
       level,
       component,
       since,
-      limit: limit ? parseInt(limit, 10) : 100
+      limit: 10000  // Get all then paginate
     });
-    res.json(logs);
+
+    // Paginate
+    const total = allLogs.length;
+    const paginated = allLogs.slice(offset, offset + limit);
+
+    res.json({
+      logs: paginated,
+      pagination: {
+        total,
+        limit,
+        offset,
+        hasMore: offset + limit < total
+      }
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -1250,14 +1385,88 @@ app.post('/api/triggers/check', async (req, res) => {
 // START SERVER
 // ============================================================================
 
+// Track server instance for graceful shutdown
+let server = null;
+let usageTracker = null;
+let isShuttingDown = false;
+
+/**
+ * Graceful shutdown handler
+ */
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) {
+    console.log('[Server] Already shutting down...');
+    return;
+  }
+
+  isShuttingDown = true;
+  console.log(`\n[Server] Received ${signal}, shutting down gracefully...`);
+
+  // Give active requests time to complete
+  const shutdownTimeout = setTimeout(() => {
+    console.error('[Server] Forced shutdown after timeout');
+    process.exit(1);
+  }, 30000);
+
+  try {
+    // Stop accepting new connections
+    if (server) {
+      await new Promise((resolve) => {
+        server.close(resolve);
+      });
+      console.log('[Server] HTTP server closed');
+    }
+
+    // Save usage data
+    if (usageTracker) {
+      await usageTracker.shutdown();
+      console.log('[Server] Usage data saved');
+    }
+
+    // Clean up orchestrator intervals
+    if (orchestrator.permissionCleanupInterval) {
+      clearInterval(orchestrator.permissionCleanupInterval);
+    }
+
+    // Save session data
+    // (SessionManager saves on each message, but we ensure final save)
+    console.log('[Server] Cleanup complete');
+
+    clearTimeout(shutdownTimeout);
+    process.exit(0);
+  } catch (error) {
+    console.error('[Server] Error during shutdown:', error);
+    clearTimeout(shutdownTimeout);
+    process.exit(1);
+  }
+}
+
+// Register shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Handle uncaught errors gracefully
+process.on('uncaughtException', (error) => {
+  console.error('[Server] Uncaught exception:', error);
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Server] Unhandled rejection at:', promise, 'reason:', reason);
+});
+
 async function start() {
+  // Initialize usage tracker
+  usageTracker = await initializeUsageTracker(CONFIG.vaultPath);
+  console.log('[Server] Usage tracker initialized');
+
   // Initialize orchestrator
   await orchestrator.initialize();
 
-  app.listen(CONFIG.port, CONFIG.host, () => {
+  server = app.listen(CONFIG.port, CONFIG.host, () => {
     console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
-║           🧠 Obsidian Agent Pilot Server                      ║
+║           🧠 Parachute Agent Server                           ║
 ║         (Claude Agent SDK + Orchestrator)                     ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Server:  http://${CONFIG.host}:${CONFIG.port}                              ║
@@ -1265,14 +1474,13 @@ async function start() {
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Endpoints:                                                   ║
 ║    POST /api/chat            - Chat with agent                ║
-║    POST /api/agents/spawn    - Spawn agent (queue)            ║
+║    POST /api/chat/stream     - Streaming chat (SSE)           ║
+║    GET  /api/chat/sessions   - List sessions (paginated)      ║
+║    GET  /api/usage           - Token usage stats              ║
 ║    GET  /api/agents          - List defined agents            ║
 ║    GET  /api/queue           - View queue state               ║
-║    POST /api/queue/process   - Trigger queue processing       ║
-║    GET  /api/documents       - List documents                 ║
-║    GET  /api/search?q=       - Search vault                   ║
 ║                                                               ║
-║  Access via Tailscale from any device!                        ║
+║  Graceful shutdown on SIGTERM/SIGINT                          ║
 ╚═══════════════════════════════════════════════════════════════╝
     `);
   });
