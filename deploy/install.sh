@@ -40,8 +40,10 @@ if ! command -v node &> /dev/null; then
 fi
 
 NODE_PATH=$(which node)
+NODE_BIN_DIR=$(dirname "$NODE_PATH")
 NODE_VERSION=$(node --version)
 echo -e "${GREEN}Found Node.js:${NC} $NODE_VERSION at $NODE_PATH"
+echo -e "${GREEN}Node bin dir:${NC} $NODE_BIN_DIR"
 
 # Check for Claude CLI
 echo ""
@@ -148,6 +150,8 @@ PLIST_PATH="$HOME/Library/LaunchAgents/xyz.openparachute.agent.plist"
 # Generate plist from template
 sed -e "s|INSTALL_PATH|$INSTALL_PATH|g" \
     -e "s|VAULT_PATH_PLACEHOLDER|$VAULT_PATH|g" \
+    -e "s|HOME_PLACEHOLDER|$HOME|g" \
+    -e "s|NODE_BIN_PATH|$NODE_BIN_DIR|g" \
     -e "s|/usr/local/bin/node|$NODE_PATH|g" \
     "$SCRIPT_DIR/xyz.openparachute.agent.plist" > "$PLIST_PATH"
 
