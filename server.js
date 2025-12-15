@@ -195,7 +195,7 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { message, agentPath, documentPath, sessionId, initialContext } = req.body;
 
-    console.log(`[API] Chat request: agent=${agentPath}, sessionId=${sessionId}`);
+    log.info('Chat request', { agentPath, sessionId });
 
     if (!message) {
       return res.status(400).json({ error: 'message is required' });
@@ -242,7 +242,7 @@ app.post('/api/chat', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Chat error:', error);
+    log.error('Chat error', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -275,7 +275,7 @@ app.post('/api/chat/stream', async (req, res) => {
     return;
   }
 
-  console.log(`[API] Streaming chat request: agent=${agentPath}, sessionId=${sessionId}`);
+  log.info('Streaming chat request', { agentPath, sessionId });
 
   const context = {};
   if (sessionId) {
@@ -296,7 +296,7 @@ app.post('/api/chat/stream', async (req, res) => {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     }
   } catch (error) {
-    console.error('Stream error:', error);
+    log.error('Stream error', error);
     res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
   }
 
@@ -476,7 +476,7 @@ app.post('/api/agents/spawn', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Spawn error:', error);
+    log.error('Spawn error', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -901,7 +901,7 @@ app.post('/api/captures', async (req, res) => {
     await fs.writeFile(filePath, content, 'utf-8');
 
     const relativePath = `captures/${safeFilename}`;
-    console.log(`[API] Uploaded capture: ${relativePath}`);
+    log.info('Uploaded capture', { path: relativePath });
 
     res.status(201).json({
       success: true,
@@ -910,7 +910,7 @@ app.post('/api/captures', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Capture upload error:', error);
+    log.error('Capture upload error', error);
     res.status(500).json({ success: false, error: `Failed to write file: ${error.message}` });
   }
 });
@@ -1420,16 +1420,16 @@ let isShuttingDown = false;
  */
 async function gracefulShutdown(signal) {
   if (isShuttingDown) {
-    console.log('[Server] Already shutting down...');
+    log.warn('Already shutting down...');
     return;
   }
 
   isShuttingDown = true;
-  console.log(`\n[Server] Received ${signal}, shutting down gracefully...`);
+  log.info(`Received ${signal}, shutting down gracefully...`);
 
   // Give active requests time to complete
   const shutdownTimeout = setTimeout(() => {
-    console.error('[Server] Forced shutdown after timeout');
+    log.error('Forced shutdown after timeout');
     process.exit(1);
   }, 30000);
 
@@ -1439,13 +1439,13 @@ async function gracefulShutdown(signal) {
       await new Promise((resolve) => {
         server.close(resolve);
       });
-      console.log('[Server] HTTP server closed');
+      log.info('HTTP server closed');
     }
 
     // Save usage data
     if (usageTracker) {
       await usageTracker.shutdown();
-      console.log('[Server] Usage data saved');
+      log.info('Usage data saved');
     }
 
     // Clean up orchestrator intervals
@@ -1455,12 +1455,12 @@ async function gracefulShutdown(signal) {
 
     // Save session data
     // (SessionManager saves on each message, but we ensure final save)
-    console.log('[Server] Cleanup complete');
+    log.info('Cleanup complete');
 
     clearTimeout(shutdownTimeout);
     process.exit(0);
   } catch (error) {
-    console.error('[Server] Error during shutdown:', error);
+    log.error('Error during shutdown', error);
     clearTimeout(shutdownTimeout);
     process.exit(1);
   }
@@ -1472,23 +1472,29 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Handle uncaught errors gracefully
 process.on('uncaughtException', (error) => {
-  console.error('[Server] Uncaught exception:', error);
+  log.error('Uncaught exception', error);
   gracefulShutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason, promise) => {
-  console.error('[Server] Unhandled rejection at:', promise, 'reason:', reason);
+  log.error('Unhandled rejection', { reason: String(reason), promise: String(promise) });
 });
 
 async function start() {
   // Initialize usage tracker
   usageTracker = await initializeUsageTracker(CONFIG.vaultPath);
-  console.log('[Server] Usage tracker initialized');
+  log.info('Usage tracker initialized');
 
   // Initialize orchestrator
   await orchestrator.initialize();
 
   server = app.listen(CONFIG.port, CONFIG.host, () => {
+    log.info('Server started', {
+      host: CONFIG.host,
+      port: CONFIG.port,
+      vault: CONFIG.vaultPath
+    });
+
     console.log(`
 ╔═══════════════════════════════════════════════════════════════╗
 ║           🧠 Parachute Agent Server                           ║
@@ -1496,14 +1502,14 @@ async function start() {
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Server:  http://${CONFIG.host}:${CONFIG.port}                              ║
 ║  Vault:   ${CONFIG.vaultPath.substring(0, 45).padEnd(45)}   ║
+║  Dashboard: http://${CONFIG.host}:${CONFIG.port}/                           ║
 ╠═══════════════════════════════════════════════════════════════╣
 ║  Endpoints:                                                   ║
 ║    POST /api/chat            - Chat with agent                ║
 ║    POST /api/chat/stream     - Streaming chat (SSE)           ║
 ║    GET  /api/chat/sessions   - List sessions (paginated)      ║
-║    GET  /api/usage           - Token usage stats              ║
+║    GET  /api/logs            - Query server logs              ║
 ║    GET  /api/agents          - List defined agents            ║
-║    GET  /api/queue           - View queue state               ║
 ║                                                               ║
 ║  Graceful shutdown on SIGTERM/SIGINT                          ║
 ╚═══════════════════════════════════════════════════════════════╝
@@ -1511,4 +1517,7 @@ async function start() {
   });
 }
 
-start().catch(console.error);
+start().catch((error) => {
+  log.error('Failed to start server', error);
+  process.exit(1);
+});
