@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Obsidian Agent Pilot</title>
+  <title>Parachute Agent Dashboard</title>
   <style>
     :root {
       --bg: #1a1a2e;
@@ -15,6 +15,7 @@
       --text-dim: #888;
       --border: #333;
       --success: #4ade80;
+      --warning: #fbbf24;
     }
 
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -23,57 +24,70 @@
       font-family: 'SF Mono', 'Fira Code', monospace;
       background: var(--bg);
       color: var(--text);
-      height: 100vh;
-      display: flex;
-      flex-direction: column;
+      min-height: 100vh;
+      padding: 1.5rem;
     }
 
     header {
-      background: var(--bg-secondary);
-      padding: 1rem 1.5rem;
-      border-bottom: 1px solid var(--border);
       display: flex;
       align-items: center;
-      gap: 1rem;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
     }
 
     header h1 {
-      font-size: 1.2rem;
+      font-size: 1.4rem;
       font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }
 
     header h1 span { color: var(--accent); }
 
-    .vault-info {
-      margin-left: auto;
-      font-size: 0.75rem;
-      color: var(--text-dim);
-    }
-
-    main {
-      flex: 1;
+    .status-badge {
       display: flex;
-      overflow: hidden;
-    }
-
-    /* Sidebar */
-    .sidebar {
-      width: 280px;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.85rem;
+      padding: 0.4rem 0.8rem;
+      border-radius: 20px;
       background: var(--bg-secondary);
-      border-right: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
     }
 
-    .sidebar-header {
-      padding: 1rem;
-      border-bottom: 1px solid var(--border);
+    .status-badge.online { color: var(--success); }
+    .status-badge.offline { color: var(--accent); }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .card {
+      background: var(--bg-secondary);
+      border-radius: 12px;
+      padding: 1.25rem;
+      border: 1px solid var(--border);
+    }
+
+    .card-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      margin-bottom: 1rem;
     }
 
-    .sidebar-header h2 {
+    .card-title {
       font-size: 0.85rem;
       font-weight: 500;
       color: var(--text-dim);
@@ -81,568 +95,510 @@
       letter-spacing: 0.05em;
     }
 
-    .doc-list {
-      flex: 1;
-      overflow-y: auto;
-      padding: 0.5rem;
-    }
-
-    .doc-item {
-      padding: 0.75rem;
-      border-radius: 6px;
-      cursor: pointer;
-      margin-bottom: 0.25rem;
-      transition: background 0.15s;
-    }
-
-    .doc-item:hover { background: var(--bg-tertiary); }
-    .doc-item.selected { background: var(--bg-tertiary); border-left: 3px solid var(--accent); }
-
-    .doc-title {
-      font-size: 0.9rem;
-      margin-bottom: 0.25rem;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .doc-title .agent-badge {
-      font-size: 0.65rem;
-      background: var(--accent-dim);
-      padding: 0.15rem 0.4rem;
-      border-radius: 3px;
-    }
-
-    .doc-path {
-      font-size: 0.7rem;
-      color: var(--text-dim);
-    }
-
-    /* Chat Area */
-    .chat-area {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-    }
-
-    .chat-header {
-      padding: 1rem 1.5rem;
-      border-bottom: 1px solid var(--border);
-      background: var(--bg-secondary);
-    }
-
-    .chat-header h2 {
-      font-size: 1rem;
-      margin-bottom: 0.25rem;
-    }
-
-    .chat-header .context {
+    .card-action {
       font-size: 0.75rem;
-      color: var(--text-dim);
+      color: var(--accent);
+      cursor: pointer;
+      text-decoration: none;
     }
 
-    .chat-header .context.with-agent { color: var(--success); }
+    .card-action:hover { text-decoration: underline; }
 
-    .messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: 1.5rem;
-      display: flex;
-      flex-direction: column;
+    /* Stats Section */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
       gap: 1rem;
     }
 
-    .message {
-      max-width: 85%;
+    .stat-item {
+      background: var(--bg-tertiary);
       padding: 1rem;
       border-radius: 8px;
-      line-height: 1.5;
     }
 
-    .message.user {
-      background: var(--bg-tertiary);
-      align-self: flex-end;
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
     }
 
-    .message.assistant {
-      background: var(--bg-secondary);
-      align-self: flex-start;
-      border: 1px solid var(--border);
-    }
+    .stat-value.cost { color: var(--warning); }
+    .stat-value.tokens { color: var(--success); }
 
-    .message pre {
-      background: var(--bg);
-      padding: 0.75rem;
-      border-radius: 4px;
-      overflow-x: auto;
-      margin: 0.5rem 0;
-      font-size: 0.85rem;
-    }
-
-    .message code {
-      background: var(--bg);
-      padding: 0.15rem 0.3rem;
-      border-radius: 3px;
-      font-size: 0.85rem;
-    }
-
-    .thinking {
+    .stat-label {
+      font-size: 0.75rem;
       color: var(--text-dim);
-      font-style: italic;
+    }
+
+    /* System Info */
+    .info-row {
       display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }
-
-    .thinking::before {
-      content: '';
-      width: 8px;
-      height: 8px;
-      background: var(--accent);
-      border-radius: 50%;
-      animation: pulse 1s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 0.3; }
-      50% { opacity: 1; }
-    }
-
-    .chat-input-area {
-      padding: 1rem 1.5rem;
-      border-top: 1px solid var(--border);
-      background: var(--bg-secondary);
-    }
-
-    .input-wrapper {
-      display: flex;
-      gap: 0.75rem;
-    }
-
-    .chat-input {
-      flex: 1;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.75rem 1rem;
-      color: var(--text);
-      font-family: inherit;
-      font-size: 0.9rem;
-      resize: none;
-    }
-
-    .chat-input:focus {
-      outline: none;
-      border-color: var(--accent);
-    }
-
-    .send-btn {
-      background: var(--accent);
-      border: none;
-      border-radius: 6px;
-      padding: 0.75rem 1.5rem;
-      color: white;
-      font-family: inherit;
-      font-weight: 500;
-      cursor: pointer;
-      transition: background 0.15s;
-    }
-
-    .send-btn:hover { background: var(--accent-dim); }
-    .send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    /* Document Panel */
-    .doc-panel {
-      width: 400px;
-      background: var(--bg-secondary);
-      border-left: 1px solid var(--border);
-      display: flex;
-      flex-direction: column;
-    }
-
-    .doc-panel.hidden { display: none; }
-
-    .doc-panel-header {
-      padding: 1rem;
+      justify-content: space-between;
+      padding: 0.6rem 0;
       border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+
+    .info-row:last-child { border-bottom: none; }
+
+    .info-label { color: var(--text-dim); }
+    .info-value {
+      color: var(--text);
+      word-break: break-all;
+      text-align: right;
+      max-width: 200px;
+    }
+
+    /* Agent/Session Lists */
+    .list-item {
       display: flex;
       justify-content: space-between;
       align-items: center;
-    }
-
-    .doc-panel-header h3 {
-      font-size: 0.9rem;
-      font-weight: 500;
-    }
-
-    .close-btn {
-      background: none;
-      border: none;
-      color: var(--text-dim);
-      cursor: pointer;
-      font-size: 1.2rem;
-    }
-
-    .doc-content {
-      flex: 1;
-      overflow-y: auto;
-      padding: 1rem;
-      font-size: 0.85rem;
-      line-height: 1.6;
-    }
-
-    .doc-content h1, .doc-content h2, .doc-content h3 {
-      margin: 1rem 0 0.5rem;
-      color: var(--accent);
-    }
-
-    .doc-content ul, .doc-content ol {
-      margin-left: 1.5rem;
-    }
-
-    .doc-frontmatter {
-      background: var(--bg);
       padding: 0.75rem;
-      border-radius: 4px;
-      margin-bottom: 1rem;
+      background: var(--bg-tertiary);
+      border-radius: 8px;
+      margin-bottom: 0.5rem;
+      font-size: 0.85rem;
+    }
+
+    .list-item:last-child { margin-bottom: 0; }
+
+    .list-item-title {
+      font-weight: 500;
+      margin-bottom: 0.2rem;
+    }
+
+    .list-item-subtitle {
       font-size: 0.75rem;
-    }
-
-    .doc-frontmatter pre {
-      margin: 0;
-      white-space: pre-wrap;
-    }
-
-    /* Empty state */
-    .empty-state {
-      flex: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
       color: var(--text-dim);
+    }
+
+    .list-item-meta {
+      text-align: right;
+      font-size: 0.75rem;
+      color: var(--text-dim);
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 0.65rem;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      background: var(--accent-dim);
+      margin-left: 0.5rem;
+    }
+
+    /* Empty State */
+    .empty {
       text-align: center;
       padding: 2rem;
+      color: var(--text-dim);
+      font-size: 0.85rem;
     }
 
-    .empty-state h2 {
-      font-size: 1.5rem;
-      margin-bottom: 0.5rem;
+    /* Refresh Button */
+    .refresh-btn {
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.4rem 0.8rem;
       color: var(--text);
+      font-family: inherit;
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all 0.15s;
     }
 
-    .empty-state p {
-      max-width: 400px;
-      line-height: 1.6;
+    .refresh-btn:hover {
+      border-color: var(--accent);
+      background: var(--bg-secondary);
     }
 
+    /* Full Width Cards */
+    .full-width {
+      grid-column: 1 / -1;
+    }
+
+    /* Table */
+    .table {
+      width: 100%;
+      font-size: 0.8rem;
+    }
+
+    .table th {
+      text-align: left;
+      padding: 0.6rem;
+      color: var(--text-dim);
+      font-weight: 500;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .table td {
+      padding: 0.6rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .table tr:last-child td { border-bottom: none; }
+
+    .table .truncate {
+      max-width: 200px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Quick Actions */
     .quick-actions {
-      margin-top: 1.5rem;
       display: flex;
-      gap: 0.75rem;
+      gap: 0.5rem;
       flex-wrap: wrap;
-      justify-content: center;
     }
 
-    .quick-action {
+    .action-btn {
       background: var(--bg-tertiary);
       border: 1px solid var(--border);
       border-radius: 6px;
       padding: 0.5rem 1rem;
       color: var(--text);
       font-family: inherit;
+      font-size: 0.8rem;
       cursor: pointer;
       transition: all 0.15s;
     }
 
-    .quick-action:hover {
+    .action-btn:hover {
       border-color: var(--accent);
       background: var(--bg-secondary);
+    }
+
+    .action-btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .action-btn.primary:hover {
+      background: var(--accent-dim);
+    }
+
+    /* Loading */
+    .loading {
+      color: var(--text-dim);
+      font-style: italic;
     }
   </style>
 </head>
 <body>
   <header>
-    <h1><span>◆</span> Obsidian Agent Pilot</h1>
-    <div class="vault-info" id="vaultInfo">Loading vault...</div>
+    <h1><span>&#x2708;</span> Parachute Agent</h1>
+    <div class="status-badge" id="statusBadge">
+      <div class="status-dot"></div>
+      <span id="statusText">Checking...</span>
+    </div>
   </header>
 
-  <main>
-    <aside class="sidebar">
-      <div class="sidebar-header">
-        <h2>Documents</h2>
-        <span id="docCount">0</span>
+  <div class="grid">
+    <!-- Usage Today -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Usage Today</span>
+        <button class="refresh-btn" onclick="loadUsage()">Refresh</button>
       </div>
-      <div class="doc-list" id="docList"></div>
-    </aside>
-
-    <section class="chat-area">
-      <div class="chat-header">
-        <h2 id="chatTitle">Vault Agent</h2>
-        <div class="context" id="chatContext">Chat with your entire vault</div>
-      </div>
-
-      <div class="messages" id="messages">
-        <div class="empty-state">
-          <h2>Welcome to your Living Vault</h2>
-          <p>
-            Each document can have its own agent personality defined in frontmatter.
-            Select a document to chat with its agent, or chat with the vault as a whole.
-          </p>
-          <div class="quick-actions">
-            <button class="quick-action" data-prompt="What documents are in my vault?">List documents</button>
-            <button class="quick-action" data-prompt="Give me an overview of my vault's structure and content">Vault overview</button>
-            <button class="quick-action" data-prompt="Which documents have agents configured?">Find agents</button>
-          </div>
+      <div class="stats-grid" id="todayStats">
+        <div class="stat-item">
+          <div class="stat-value tokens" id="todayTokens">-</div>
+          <div class="stat-label">Total Tokens</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value cost" id="todayCost">-</div>
+          <div class="stat-label">Est. Cost</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="todayRequests">-</div>
+          <div class="stat-label">Requests</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-value" id="cacheHits">-</div>
+          <div class="stat-label">Cache Hits</div>
         </div>
       </div>
+    </div>
 
-      <div class="chat-input-area">
-        <div class="input-wrapper">
-          <textarea
-            class="chat-input"
-            id="chatInput"
-            placeholder="Ask anything about your vault..."
-            rows="1"
-          ></textarea>
-          <button class="send-btn" id="sendBtn">Send</button>
+    <!-- System Info -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">System Info</span>
+      </div>
+      <div id="systemInfo">
+        <div class="info-row">
+          <span class="info-label">Vault Path</span>
+          <span class="info-value" id="vaultPath">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Server Uptime</span>
+          <span class="info-value" id="uptime">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Documents</span>
+          <span class="info-value" id="totalDocs">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Active Sessions</span>
+          <span class="info-value" id="activeSessions">-</span>
+        </div>
+        <div class="info-row">
+          <span class="info-label">Node Version</span>
+          <span class="info-value" id="nodeVersion">-</span>
         </div>
       </div>
-    </section>
+    </div>
 
-    <aside class="doc-panel hidden" id="docPanel">
-      <div class="doc-panel-header">
-        <h3 id="docPanelTitle">Document</h3>
-        <button class="close-btn" id="closeDocPanel">&times;</button>
+    <!-- Agents -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Agents</span>
+        <span class="card-action" onclick="loadAgents()">Reload</span>
       </div>
-      <div class="doc-content" id="docContent"></div>
-    </aside>
-  </main>
+      <div id="agentsList">
+        <div class="empty loading">Loading agents...</div>
+      </div>
+    </div>
+
+    <!-- Recent Sessions -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Recent Sessions</span>
+        <span class="card-action" onclick="loadSessions()">Reload</span>
+      </div>
+      <div id="sessionsList">
+        <div class="empty loading">Loading sessions...</div>
+      </div>
+    </div>
+
+    <!-- Usage by Agent -->
+    <div class="card full-width">
+      <div class="card-header">
+        <span class="card-title">Top Agents by Usage</span>
+      </div>
+      <table class="table" id="topAgentsTable">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Requests</th>
+            <th>Input Tokens</th>
+            <th>Output Tokens</th>
+            <th>Est. Cost</th>
+          </tr>
+        </thead>
+        <tbody id="topAgentsList">
+          <tr><td colspan="5" class="empty loading">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="card full-width">
+      <div class="card-header">
+        <span class="card-title">Quick Actions</span>
+      </div>
+      <div class="quick-actions">
+        <button class="action-btn" onclick="checkHealth()">Health Check</button>
+        <button class="action-btn" onclick="viewLogs()">View Logs</button>
+        <button class="action-btn" onclick="loadAll()">Refresh All</button>
+      </div>
+    </div>
+  </div>
 
   <script>
-    // State
-    let documents = [];
-    let selectedDoc = null;
-    let isLoading = false;
+    // API base URL
+    const API = '';
 
-    // DOM elements
-    const docList = document.getElementById('docList');
-    const docCount = document.getElementById('docCount');
-    const vaultInfo = document.getElementById('vaultInfo');
-    const messages = document.getElementById('messages');
-    const chatInput = document.getElementById('chatInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const chatTitle = document.getElementById('chatTitle');
-    const chatContext = document.getElementById('chatContext');
-    const docPanel = document.getElementById('docPanel');
-    const docPanelTitle = document.getElementById('docPanelTitle');
-    const docContent = document.getElementById('docContent');
-    const closeDocPanel = document.getElementById('closeDocPanel');
+    // Format helpers
+    function formatNumber(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return n?.toString() || '0';
+    }
+
+    function formatCost(c) {
+      return '$' + (c || 0).toFixed(4);
+    }
+
+    function formatTime(ms) {
+      const s = Math.floor(ms / 1000);
+      const m = Math.floor(s / 60);
+      const h = Math.floor(m / 60);
+      const d = Math.floor(h / 24);
+      if (d > 0) return `${d}d ${h % 24}h`;
+      if (h > 0) return `${h}h ${m % 60}m`;
+      if (m > 0) return `${m}m`;
+      return `${s}s`;
+    }
+
+    function formatDate(dateStr) {
+      const d = new Date(dateStr);
+      const now = new Date();
+      const diff = now - d;
+      if (diff < 60000) return 'Just now';
+      if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+      return d.toLocaleDateString();
+    }
+
+    // Check server status
+    async function checkHealth() {
+      try {
+        const res = await fetch(API + '/api/health');
+        const data = await res.json();
+        const badge = document.getElementById('statusBadge');
+        const text = document.getElementById('statusText');
+
+        if (data.status === 'healthy') {
+          badge.className = 'status-badge online';
+          text.textContent = 'Online';
+        } else {
+          badge.className = 'status-badge offline';
+          text.textContent = 'Degraded';
+        }
+        return data;
+      } catch (e) {
+        document.getElementById('statusBadge').className = 'status-badge offline';
+        document.getElementById('statusText').textContent = 'Offline';
+        return null;
+      }
+    }
+
+    // Load usage stats
+    async function loadUsage() {
+      try {
+        const res = await fetch(API + '/api/stats/usage');
+        const data = await res.json();
+
+        // Today stats
+        if (data.today) {
+          document.getElementById('todayTokens').textContent = formatNumber(data.today.totalTokens);
+          document.getElementById('todayCost').textContent = formatCost(data.today.estimatedCost);
+          document.getElementById('todayRequests').textContent = data.today.requestCount || 0;
+          document.getElementById('cacheHits').textContent = formatNumber(data.today.cacheReadInputTokens || 0);
+        }
+
+        // Active sessions
+        document.getElementById('activeSessions').textContent = data.activeSessions || 0;
+
+        // Top agents table
+        const tbody = document.getElementById('topAgentsList');
+        if (data.topAgents && data.topAgents.length > 0) {
+          tbody.innerHTML = data.topAgents.map(a => `
+            <tr>
+              <td class="truncate">${a.agentPath}</td>
+              <td>${a.requestCount}</td>
+              <td>${formatNumber(a.inputTokens)}</td>
+              <td>${formatNumber(a.outputTokens)}</td>
+              <td>${formatCost(a.estimatedCost)}</td>
+            </tr>
+          `).join('');
+        } else {
+          tbody.innerHTML = '<tr><td colspan="5" class="empty">No usage data yet</td></tr>';
+        }
+      } catch (e) {
+        console.error('Failed to load usage:', e);
+      }
+    }
+
+    // Load system info
+    async function loadSystemInfo() {
+      try {
+        const res = await fetch(API + '/api/stats');
+        const data = await res.json();
+
+        document.getElementById('vaultPath').textContent = data.vaultPath || '-';
+        document.getElementById('uptime').textContent = formatTime(data.uptime || 0);
+        document.getElementById('totalDocs').textContent = data.documents || '-';
+        document.getElementById('nodeVersion').textContent = process?.version || data.nodeVersion || '-';
+      } catch (e) {
+        console.error('Failed to load system info:', e);
+      }
+    }
+
+    // Load agents
+    async function loadAgents() {
+      try {
+        const res = await fetch(API + '/api/agents');
+        const agents = await res.json();
+        const container = document.getElementById('agentsList');
+
+        if (!agents || agents.length === 0) {
+          container.innerHTML = '<div class="empty">No agents defined</div>';
+          return;
+        }
+
+        container.innerHTML = agents.map(a => `
+          <div class="list-item">
+            <div>
+              <div class="list-item-title">${a.name || a.path}</div>
+              <div class="list-item-subtitle">${a.description || 'No description'}</div>
+            </div>
+            <div class="list-item-meta">
+              ${a.type ? `<span class="badge">${a.type}</span>` : ''}
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        document.getElementById('agentsList').innerHTML = '<div class="empty">Failed to load agents</div>';
+      }
+    }
+
+    // Load sessions
+    async function loadSessions() {
+      try {
+        const res = await fetch(API + '/api/chat/sessions?limit=5');
+        const data = await res.json();
+        const sessions = data.sessions || data;
+        const container = document.getElementById('sessionsList');
+
+        if (!sessions || sessions.length === 0) {
+          container.innerHTML = '<div class="empty">No sessions yet</div>';
+          return;
+        }
+
+        container.innerHTML = sessions.slice(0, 5).map(s => `
+          <div class="list-item">
+            <div>
+              <div class="list-item-title">${s.title || s.agentPath || 'Untitled'}</div>
+              <div class="list-item-subtitle">${s.agentPath || 'vault-agent'}</div>
+            </div>
+            <div class="list-item-meta">
+              ${s.messageCount || 0} messages<br>
+              ${formatDate(s.lastActivity || s.created)}
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        document.getElementById('sessionsList').innerHTML = '<div class="empty">Failed to load sessions</div>';
+      }
+    }
+
+    // View logs (opens in new tab)
+    function viewLogs() {
+      alert('Logs are available at: INSTALL_PATH/logs/stdout.log\n\nUse: tail -f logs/stdout.log');
+    }
+
+    // Load all data
+    async function loadAll() {
+      await Promise.all([
+        checkHealth(),
+        loadUsage(),
+        loadSystemInfo(),
+        loadAgents(),
+        loadSessions()
+      ]);
+    }
 
     // Initialize
-    async function init() {
-      await loadVaultInfo();
-      await loadDocuments();
-      setupEventListeners();
-    }
+    loadAll();
 
-    async function loadVaultInfo() {
-      try {
-        const res = await fetch('/api/vault');
-        const data = await res.json();
-        vaultInfo.textContent = `${data.totalDocuments} documents`;
-      } catch (e) {
-        vaultInfo.textContent = 'Error loading vault';
-      }
-    }
-
-    async function loadDocuments() {
-      try {
-        const res = await fetch('/api/documents');
-        documents = await res.json();
-        renderDocList();
-      } catch (e) {
-        console.error('Failed to load documents:', e);
-      }
-    }
-
-    function renderDocList() {
-      docCount.textContent = documents.length;
-      docList.innerHTML = documents.map(doc => `
-        <div class="doc-item" data-path="${doc.path}">
-          <div class="doc-title">
-            ${doc.title}
-            ${doc.agent ? `<span class="agent-badge">${doc.agent.role || 'agent'}</span>` : ''}
-          </div>
-          <div class="doc-path">${doc.path}</div>
-        </div>
-      `).join('');
-    }
-
-    function selectDocument(path) {
-      const doc = documents.find(d => d.path === path);
-      if (!doc) return;
-
-      selectedDoc = doc;
-
-      // Update UI
-      document.querySelectorAll('.doc-item').forEach(el => {
-        el.classList.toggle('selected', el.dataset.path === path);
-      });
-
-      if (doc.agent) {
-        chatTitle.textContent = `${doc.title} Agent`;
-        chatContext.textContent = `Role: ${doc.agent.role || 'custom agent'}`;
-        chatContext.classList.add('with-agent');
-      } else {
-        chatTitle.textContent = doc.title;
-        chatContext.textContent = 'This document has no agent (using vault agent)';
-        chatContext.classList.remove('with-agent');
-      }
-
-      // Show document panel
-      showDocPanel(path);
-    }
-
-    function deselectDocument() {
-      selectedDoc = null;
-      document.querySelectorAll('.doc-item').forEach(el => el.classList.remove('selected'));
-      chatTitle.textContent = 'Vault Agent';
-      chatContext.textContent = 'Chat with your entire vault';
-      chatContext.classList.remove('with-agent');
-      docPanel.classList.add('hidden');
-    }
-
-    async function showDocPanel(path) {
-      try {
-        const res = await fetch(`/api/documents/${path}`);
-        const doc = await res.json();
-
-        docPanelTitle.textContent = doc.frontmatter.title || path;
-        docContent.innerHTML = `
-          <div class="doc-frontmatter">
-            <strong>Frontmatter:</strong>
-            <pre>${JSON.stringify(doc.frontmatter, null, 2)}</pre>
-          </div>
-          ${doc.html}
-        `;
-        docPanel.classList.remove('hidden');
-      } catch (e) {
-        console.error('Failed to load document:', e);
-      }
-    }
-
-    async function sendMessage(text) {
-      if (!text.trim() || isLoading) return;
-
-      // Clear empty state
-      const emptyState = messages.querySelector('.empty-state');
-      if (emptyState) emptyState.remove();
-
-      // Add user message
-      addMessage(text, 'user');
-
-      // Show thinking indicator
-      const thinkingEl = document.createElement('div');
-      thinkingEl.className = 'thinking';
-      thinkingEl.textContent = 'Agent is thinking...';
-      messages.appendChild(thinkingEl);
-      messages.scrollTop = messages.scrollHeight;
-
-      isLoading = true;
-      sendBtn.disabled = true;
-      chatInput.value = '';
-
-      try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: text,
-            documentPath: selectedDoc?.path
-          })
-        });
-
-        const data = await res.json();
-        thinkingEl.remove();
-
-        if (data.error) {
-          addMessage(`Error: ${data.error}`, 'assistant');
-        } else {
-          addMessage(data.response, 'assistant');
-        }
-
-        // Refresh documents in case any were created/modified
-        await loadDocuments();
-      } catch (e) {
-        thinkingEl.remove();
-        addMessage(`Error: ${e.message}`, 'assistant');
-      }
-
-      isLoading = false;
-      sendBtn.disabled = false;
-    }
-
-    function addMessage(text, role) {
-      const el = document.createElement('div');
-      el.className = `message ${role}`;
-      el.innerHTML = formatMessage(text);
-      messages.appendChild(el);
-      messages.scrollTop = messages.scrollHeight;
-    }
-
-    function formatMessage(text) {
-      // Basic markdown-like formatting
-      return text
-        .replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
-        .replace(/`([^`]+)`/g, '<code>$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/\n/g, '<br>');
-    }
-
-    function setupEventListeners() {
-      // Document selection
-      docList.addEventListener('click', (e) => {
-        const docItem = e.target.closest('.doc-item');
-        if (docItem) {
-          if (selectedDoc?.path === docItem.dataset.path) {
-            deselectDocument();
-          } else {
-            selectDocument(docItem.dataset.path);
-          }
-        }
-      });
-
-      // Close doc panel
-      closeDocPanel.addEventListener('click', () => {
-        docPanel.classList.add('hidden');
-      });
-
-      // Send message
-      sendBtn.addEventListener('click', () => sendMessage(chatInput.value));
-
-      chatInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          sendMessage(chatInput.value);
-        }
-      });
-
-      // Quick actions
-      document.addEventListener('click', (e) => {
-        if (e.target.classList.contains('quick-action')) {
-          sendMessage(e.target.dataset.prompt);
-        }
-      });
-
-      // Auto-resize textarea
-      chatInput.addEventListener('input', () => {
-        chatInput.style.height = 'auto';
-        chatInput.style.height = Math.min(chatInput.scrollHeight, 150) + 'px';
-      });
-    }
-
-    init();
+    // Auto-refresh every 30 seconds
+    setInterval(loadAll, 30000);
   </script>
 </body>
 </html>

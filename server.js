@@ -522,17 +522,42 @@ app.get('/api/stats', async (req, res) => {
   try {
     const sessionStats = orchestrator.getSessionStats();
     const queueState = orchestrator.getQueueState();
+    const documents = await orchestrator.listVaultFiles();
 
     res.json({
+      vaultPath: CONFIG.vaultPath,
+      documents: documents.length,
       sessions: sessionStats,
       queue: {
         pending: queueState.pending?.length || 0,
         running: queueState.running?.length || 0,
         completed: queueState.completed?.length || 0
       },
-      uptime: process.uptime(),
+      uptime: process.uptime() * 1000, // Convert to milliseconds for dashboard
+      nodeVersion: process.version,
       memory: process.memoryUsage()
     });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/stats/usage
+ * Get token usage statistics from the usage tracker
+ */
+app.get('/api/stats/usage', async (req, res) => {
+  try {
+    const tracker = getUsageTracker();
+    if (!tracker) {
+      return res.json({
+        today: { totalTokens: 0, estimatedCost: 0, requestCount: 0, cacheReadInputTokens: 0 },
+        total: { totalTokens: 0, estimatedCost: 0, requestCount: 0 },
+        activeSessions: 0,
+        topAgents: []
+      });
+    }
+    res.json(tracker.getSummary());
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

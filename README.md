@@ -104,13 +104,22 @@ npm install && npm run build
 
 Copy to your vault's `.obsidian/plugins/parachute-agent/` folder.
 
+## Authentication
+
+This project uses **Claude Agent SDK authentication** via `claude login`. No API keys needed!
+
+```bash
+# One-time setup
+npm install -g @anthropic-ai/claude-code
+claude login
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VAULT_PATH` | `./sample-vault` | Path to markdown folder |
 | `PORT` | `3333` | Server port |
-| `ANTHROPIC_API_KEY` | (required) | Claude API key |
 
 ## Part of Parachute
 

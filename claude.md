@@ -275,6 +275,18 @@ agent:
 - Avoids bot detection (real fingerprint)
 - Runs locally for privacy
 
+## Authentication
+
+This project uses **Claude Agent SDK authentication** via `claude login`. No API keys are needed!
+
+```bash
+# One-time setup
+npm install -g @anthropic-ai/claude-code
+claude login
+```
+
+The SDK automatically uses the credentials stored by `claude login`.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -282,9 +294,8 @@ agent:
 | `VAULT_PATH` | `./sample-vault` | Path to markdown folder |
 | `PORT` | `3333` | Server port |
 | `HOST` | `0.0.0.0` | Server bind address |
-| `ANTHROPIC_API_KEY` | (required) | Claude API key |
 | `CORS_ORIGINS` | `*` | Comma-separated allowed origins, or `*` for all |
-| `API_KEY` | (none) | Optional API key for authentication |
+| `API_KEY` | (none) | Optional API key for client authentication |
 | `MAX_MESSAGE_LENGTH` | `102400` | Max chat message length in bytes (100KB) |
 | `LOG_LEVEL` | `INFO` | Logging level: `DEBUG`, `INFO`, `WARN`, `ERROR` |
 
