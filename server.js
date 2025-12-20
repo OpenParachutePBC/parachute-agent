@@ -193,9 +193,9 @@ app.get('/api/health', async (req, res) => {
  */
 app.post('/api/chat', async (req, res) => {
   try {
-    const { message, agentPath, documentPath, sessionId, initialContext } = req.body;
+    const { message, agentPath, documentPath, sessionId, initialContext, workingDirectory } = req.body;
 
-    log.info('Chat request', { agentPath, sessionId });
+    log.info('Chat request', { agentPath, sessionId, workingDirectory });
 
     if (!message) {
       return res.status(400).json({ error: 'message is required' });
@@ -219,6 +219,9 @@ app.post('/api/chat', async (req, res) => {
     if (initialContext) {
       context.initialContext = initialContext;
     }
+    if (workingDirectory) {
+      context.workingDirectory = workingDirectory;
+    }
 
     // Run agent
     const result = await orchestrator.runImmediate(
@@ -234,6 +237,7 @@ app.post('/api/chat', async (req, res) => {
       agentPath: agentPath || null,
       documentPath: documentPath || null,
       sessionId: result.sessionId || null,
+      workingDirectory: result.workingDirectory || null,
       messageCount: result.messageCount || 0,
       toolCalls: result.toolCalls || undefined,
       permissionDenials: result.permissionDenials || undefined,
@@ -260,7 +264,7 @@ app.post('/api/chat/stream', async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.flushHeaders();
 
-  const { message, agentPath, sessionId, initialContext } = req.body;
+  const { message, agentPath, sessionId, initialContext, workingDirectory } = req.body;
 
   if (!message) {
     res.write(`data: ${JSON.stringify({ type: 'error', error: 'message is required' })}\n\n`);
@@ -275,7 +279,7 @@ app.post('/api/chat/stream', async (req, res) => {
     return;
   }
 
-  log.info('Streaming chat request', { agentPath, sessionId });
+  log.info('Streaming chat request', { agentPath, sessionId, workingDirectory });
 
   const context = {};
   if (sessionId) {
@@ -283,6 +287,9 @@ app.post('/api/chat/stream', async (req, res) => {
   }
   if (initialContext) {
     context.initialContext = initialContext;
+  }
+  if (workingDirectory) {
+    context.workingDirectory = workingDirectory;
   }
 
   try {
@@ -378,7 +385,8 @@ app.get('/api/chat/session/:id', async (req, res) => {
       agentName: session.agentPath.replace('agents/', '').replace('.md', ''),
       messages: session.messages,
       createdAt: session.createdAt,
-      lastAccessed: session.lastAccessed
+      lastAccessed: session.lastAccessed,
+      workingDirectory: session.workingDirectory || null
     });
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -1502,6 +1510,54 @@ app.get('/api/vault', async (req, res) => {
       totalDocuments: files.length,
       totalAgents: agents.length,
       documents: files
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/directories
+ * Get directories that can be used as working directories for chat sessions
+ * Returns the vault path and any recently used directories from sessions
+ */
+app.get('/api/directories', async (req, res) => {
+  try {
+    // Get the home vault directory
+    const homeDir = CONFIG.vaultPath;
+
+    // Collect unique working directories from existing sessions
+    const sessions = orchestrator.listChatSessions();
+    const usedDirs = new Set();
+
+    for (const session of sessions) {
+      if (session.workingDirectory && session.workingDirectory !== homeDir) {
+        usedDirs.add(session.workingDirectory);
+      }
+    }
+
+    // Build the list with home vault first, then recently used
+    const directories = [
+      {
+        path: homeDir,
+        name: path.basename(homeDir),
+        type: 'vault',
+        description: 'Home vault'
+      }
+    ];
+
+    for (const dir of usedDirs) {
+      directories.push({
+        path: dir,
+        name: path.basename(dir),
+        type: 'recent',
+        description: 'Recently used'
+      });
+    }
+
+    res.json({
+      homeVault: homeDir,
+      directories
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

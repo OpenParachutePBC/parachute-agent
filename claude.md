@@ -57,8 +57,9 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 |----------|--------|-------------|
 | `/api/health` | GET | Health check (returns `{status: "ok", timestamp}`) |
 | `/api/agents` | GET | List agents |
-| `/api/chat` | POST | Send message (body: `{message, agentPath?, sessionId?, initialContext?}`) |
+| `/api/chat` | POST | Send message (body: `{message, agentPath?, sessionId?, initialContext?, workingDirectory?}`) |
 | `/api/chat/stream` | POST | Streaming chat via SSE (same body as `/api/chat`) |
+| `/api/directories` | GET | List available working directories for chat sessions |
 | `/api/chat/sessions` | GET | List all sessions |
 | `/api/chat/session/:id` | GET | Get session by ID with messages |
 | `/api/chat/session/:id/archive` | POST | Archive a session |
@@ -166,6 +167,14 @@ Pass `initialContext` in the chat request body to provide context for new sessio
 - Only used on first message (when `session.messages.length === 0`)
 - If `message` is empty, `initialContext` becomes the entire message (for passing transcripts/docs directly)
 - If both provided, formatted as: `## Context\n\n{initialContext}\n\n---\n\n## Request\n\n{message}`
+
+### Working Directory
+Pass `workingDirectory` in the chat request body to run a session against a different directory:
+- The SDK's `cwd` will be set to this directory instead of the vault
+- Sessions are still stored in the home vault, but Claude operates in the specified directory
+- Useful for chatting with external codebases while keeping sessions in your vault
+- The `GET /api/directories` endpoint lists available directories (home vault + recently used)
+- Sessions track their working directory in metadata and return it in responses
 
 ### Error Handling
 - Agent execution errors returned in response
