@@ -36,6 +36,7 @@ Parachute Agent is the backend for Parachute - an AI agent system that uses mark
 | `lib/agent-loader.js` | Load agent definitions from markdown |
 | `lib/vault-utils.js` | Shared file utilities |
 | `lib/mcp-loader.js` | MCP server configuration management |
+| `lib/skills-loader.js` | Agent skills discovery and management |
 | `lib/path-validator.js` | Path traversal prevention utilities |
 | `lib/logger.js` | Structured logging with in-memory buffer |
 | `lib/errors.js` | Custom error classes with HTTP status codes |
@@ -75,6 +76,12 @@ VAULT_PATH=/path/to/vault npm start  # Custom vault
 | `/api/mcp` | GET | List all MCP server configurations |
 | `/api/mcp/:name` | POST | Add or update an MCP server |
 | `/api/mcp/:name` | DELETE | Remove an MCP server |
+| `/api/skills` | GET | List all available skills |
+| `/api/skills/:name` | GET | Get full skill content |
+| `/api/skills/:name` | POST | Create or update a skill |
+| `/api/skills/:name` | DELETE | Delete a skill |
+| `/api/agents-md` | GET | Get AGENTS.md content |
+| `/api/agents-md` | PUT | Update AGENTS.md content |
 | `/api/analytics` | GET | Get session and agent analytics |
 | `/api/logs` | GET | Query recent logs (params: `level`, `component`, `since`, `limit`) |
 | `/api/logs/stats` | GET | Get log statistics |

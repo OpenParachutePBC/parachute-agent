@@ -764,6 +764,46 @@ app.get('/api/logs/stats', async (req, res) => {
   }
 });
 
+// ============================================================================
+// AGENTS.MD MANAGEMENT
+// ============================================================================
+
+/**
+ * GET /api/agents-md
+ * Get the AGENTS.md content from vault root
+ */
+app.get('/api/agents-md', async (req, res) => {
+  try {
+    const agentsMdPath = path.join(CONFIG.vaultPath, 'AGENTS.md');
+    const content = await fs.readFile(agentsMdPath, 'utf-8');
+    res.json({ content, path: agentsMdPath });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return res.json({ content: null, path: null, exists: false });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * PUT /api/agents-md
+ * Update the AGENTS.md content
+ * Body: { content: string }
+ */
+app.put('/api/agents-md', async (req, res) => {
+  try {
+    const { content } = req.body;
+    if (typeof content !== 'string') {
+      return res.status(400).json({ error: 'Content must be a string' });
+    }
+    const agentsMdPath = path.join(CONFIG.vaultPath, 'AGENTS.md');
+    await fs.writeFile(agentsMdPath, content, 'utf-8');
+    res.json({ saved: true, path: agentsMdPath });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * GET /api/permissions
  * Get pending permission requests
@@ -1034,6 +1074,82 @@ app.delete('/api/mcp/:name', async (req, res) => {
     const { name } = req.params;
     await orchestrator.removeMcpServer(name);
     res.json({ removed: true, name });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// SKILLS MANAGEMENT
+// ============================================================================
+
+/**
+ * GET /api/skills
+ * List all available skills in the vault
+ */
+app.get('/api/skills', async (req, res) => {
+  try {
+    const skills = await orchestrator.listSkills();
+    res.json(skills);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * GET /api/skills/:name
+ * Get full content of a specific skill
+ */
+app.get('/api/skills/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const skill = await orchestrator.getSkill(name);
+    if (!skill) {
+      return res.status(404).json({ error: `Skill '${name}' not found` });
+    }
+    res.json(skill);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/skills/:name
+ * Create or update a skill
+ * Body: { name?, description, content, allowedTools? }
+ */
+app.post('/api/skills/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const skillData = req.body;
+
+    if (!skillData || typeof skillData !== 'object') {
+      return res.status(400).json({ error: 'Skill data is required' });
+    }
+
+    if (!skillData.description) {
+      return res.status(400).json({ error: 'Skill description is required' });
+    }
+
+    const skill = await orchestrator.createSkill(name, skillData);
+    res.json({ created: true, skill });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/skills/:name
+ * Delete a skill
+ */
+app.delete('/api/skills/:name', async (req, res) => {
+  try {
+    const { name } = req.params;
+    const deleted = await orchestrator.deleteSkill(name);
+    if (!deleted) {
+      return res.status(404).json({ error: `Skill '${name}' not found` });
+    }
+    res.json({ deleted: true, name });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
